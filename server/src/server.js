@@ -12,6 +12,7 @@ migrate();
 const { createApp } = require('./app');
 const { initBroadcaster } = require('./websocket/broadcaster');
 const { startEventMonitoring } = require('./activity/monitor');
+const { startIncidentDetection } = require('./incidents/detector');
 const { ensureSetupToken } = require('./setup/bootstrap');
 const { logEvent } = require('./activity/logger');
 
@@ -24,6 +25,11 @@ initBroadcaster(server);
 
 // Polls the agent for Docker events; see activity/monitor.js.
 startEventMonitoring();
+
+// Evaluates detector rules (container exit/oom/unhealthy, service
+// inactive, sustained resource thresholds) and drives the incident
+// engine; see incidents/detector.js.
+startIncidentDetection();
 
 // Prints a one-time setup token + /setup URL if no admin exists yet.
 ensureSetupToken(PORT);

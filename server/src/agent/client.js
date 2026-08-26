@@ -65,12 +65,27 @@ class AgentClient {
     }
     return body.result;
   }
+
+  /**
+   * Run a tool's post-action verify check (see agent/src/tools/*.js's
+   * `verify` definitions). A single point-in-time check — Phase 3's
+   * verification engine is what adds retry/timeout policy on top.
+   */
+  async verifyTool(name, params = {}) {
+    const { status, body } = await this.transport.request('POST', `/tools/${encodeURIComponent(name)}/verify`, params);
+    if (status !== 200 || !body?.ok) {
+      throw new AgentError(body?.error || `Verify for "${name}" failed`, status, body);
+    }
+    return body.result;
+  }
 }
 
 let sharedClient = null;
+let testClient = null;
 
 /** Lazily-constructed singleton client, wired to the Unix socket transport. */
 function getAgentClient() {
+  if (testClient) return testClient;
   if (!sharedClient) {
     const transport = new UnixSocketTransport({ socketPath: SOCKET_PATH, token: loadToken() });
     sharedClient = new AgentClient(transport);
@@ -78,4 +93,17 @@ function getAgentClient() {
   return sharedClient;
 }
 
-module.exports = { AgentClient, AgentError, getAgentClient };
+/**
+ * Test-only seam: inject a fake `{ listTools, callTool, verifyTool }` so
+ * routes and engines can be exercised over HTTP/unit tests without a live
+ * agent socket. Nothing in server/ should call this outside a test file.
+ */
+function _setClientForTesting(client) {
+  testClient = client;
+}
+
+function _resetClientForTesting() {
+  testClient = null;
+}
+
+module.exports = { AgentClient, AgentError, getAgentClient, _setClientForTesting, _resetClientForTesting };

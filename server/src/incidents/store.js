@@ -1,0 +1,147 @@
+'use strict';
+
+const { getDb } = require('../db/connection');
+const { canTransition } = require('./states');
+
+class IllegalTransitionError extends Error {
+  constructor(from, to) {
+    super(`Illegal incident transition: ${from} -> ${to}`);
+    this.name = 'IllegalTransitionError';
+    this.from = from;
+    this.to = to;
+  }
+}
+
+function deserializeIncident(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    diagnosis: row.diagnosis_json ? JSON.parse(row.diagnosis_json) : null
+  };
+}
+
+/** Most recent resolution time for a resource, used by the detector's post-resolution cooldown. */
+function getLastResolvedAt(resourceId) {
+  const row = getDb().prepare(`
+    SELECT resolved_at FROM incidents WHERE resource_id = ? AND resolved_at IS NOT NULL
+    ORDER BY resolved_at DESC LIMIT 1
+  `).get(resourceId);
+  return row ? row.resolved_at : null;
+}
+
+/** Backed by the partial unique index on incidents(resource_id) WHERE status NOT IN (terminal). */
+function findOpenIncidentForResource(resourceId) {
+  const row = getDb().prepare(`
+    SELECT * FROM incidents WHERE resource_id = ? AND status NOT IN ('RESOLVED', 'FAILED', 'DISMISSED')
+  `).get(resourceId);
+  return deserializeIncident(row);
+}
+
+function createIncident({ resourceId, severity = 'unknown', triggerRule, triggerSummary }) {
+  const now = Date.now();
+  const id = getDb().prepare(`
+    INSERT INTO incidents (resource_id, status, severity, trigger_rule, trigger_summary, detected_at, updated_at)
+    VALUES (?, 'DETECTED', ?, ?, ?, ?, ?)
+  `).run(resourceId, severity, triggerRule, triggerSummary, now, now).lastInsertRowid;
+  return getIncident(id);
+}
+
+function getIncident(id) {
+  return deserializeIncident(getDb().prepare('SELECT * FROM incidents WHERE id = ?').get(id));
+}
+
+function listIncidents({ status } = {}) {
+  const db = getDb();
+  const rows = status
+    ? db.prepare('SELECT * FROM incidents WHERE status = ? ORDER BY detected_at DESC').all(status)
+    : db.prepare('SELECT * FROM incidents ORDER BY detected_at DESC').all();
+  return rows.map(deserializeIncident);
+}
+
+/** Throws IllegalTransitionError rather than silently applying a bad transition. */
+function updateIncidentStatus(id, newStatus, extra = {}) {
+  const current = getIncident(id);
+  if (!current) throw new Error(`Incident ${id} not found`);
+  if (!canTransition(current.status, newStatus)) throw new IllegalTransitionError(current.status, newStatus);
+
+  const fields = { updated_at: Date.now(), status: newStatus, ...extra };
+  const setClause = Object.keys(fields).map(k => `${k} = ?`).join(', ');
+  getDb().prepare(`UPDATE incidents SET ${setClause} WHERE id = ?`).run(...Object.values(fields), id);
+  return getIncident(id);
+}
+
+function recordDiagnosis(id, diagnosis) {
+  return updateIncidentStatus(id, 'DIAGNOSED', {
+    root_cause: diagnosis.rootCause,
+    confidence: diagnosis.confidence,
+    diagnosis_json: JSON.stringify(diagnosis)
+  });
+}
+
+function recordInvestigationFailure(id, rawText) {
+  const current = getIncident(id);
+  getDb().prepare('UPDATE incidents SET diagnosis_raw_text = ?, updated_at = ? WHERE id = ?')
+    .run(rawText || null, Date.now(), id);
+  // Stays at INVESTIGATING (self-loop) unless already there — this call
+  // only ever follows a DETECTED->INVESTIGATING transition already made
+  // by the caller, so no additional status change is needed here.
+  return getIncident(current.id);
+}
+
+function recordResolution(id, finalStatus) {
+  return updateIncidentStatus(id, finalStatus, { resolved_at: Date.now() });
+}
+
+function addEvidence(incidentId, evidenceRows) {
+  const db = getDb();
+  const insert = db.prepare(`
+    INSERT INTO incident_evidence (incident_id, resource_id, source_tool, summary, data_json, collected_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const now = Date.now();
+  const insertMany = db.transaction((rows) => {
+    for (const row of rows) {
+      insert.run(incidentId, row.resourceId ?? null, row.sourceTool, row.summary, row.data ? JSON.stringify(row.data) : null, now);
+    }
+  });
+  insertMany(evidenceRows);
+}
+
+function getEvidence(incidentId) {
+  return getDb().prepare('SELECT * FROM incident_evidence WHERE incident_id = ? ORDER BY id').all(incidentId)
+    .map(row => ({ ...row, data: row.data_json ? JSON.parse(row.data_json) : null }));
+}
+
+function addAction(incidentId, action) {
+  const now = Date.now();
+  const id = getDb().prepare(`
+    INSERT INTO incident_actions (incident_id, tool_name, params_json, claimed_risk, real_risk, rationale, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'proposed', ?)
+  `).run(incidentId, action.tool, JSON.stringify(action.params || {}), action.claimedRisk, action.realRisk, action.rationale, now).lastInsertRowid;
+  return getAction(id);
+}
+
+function getAction(id) {
+  const row = getDb().prepare('SELECT * FROM incident_actions WHERE id = ?').get(id);
+  return row ? { ...row, params: JSON.parse(row.params_json) } : null;
+}
+
+function getActions(incidentId) {
+  return getDb().prepare('SELECT * FROM incident_actions WHERE incident_id = ? ORDER BY id').all(incidentId)
+    .map(row => ({ ...row, params: JSON.parse(row.params_json) }));
+}
+
+function updateActionStatus(id, status, extra = {}) {
+  const fields = { status, ...extra };
+  const setClause = Object.keys(fields).map(k => `${k} = ?`).join(', ');
+  getDb().prepare(`UPDATE incident_actions SET ${setClause} WHERE id = ?`).run(...Object.values(fields), id);
+  return getAction(id);
+}
+
+module.exports = {
+  IllegalTransitionError,
+  findOpenIncidentForResource, getLastResolvedAt, createIncident, getIncident, listIncidents,
+  updateIncidentStatus, recordDiagnosis, recordInvestigationFailure, recordResolution,
+  addEvidence, getEvidence,
+  addAction, getAction, getActions, updateActionStatus
+};

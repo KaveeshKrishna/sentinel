@@ -45,8 +45,8 @@ class ToolRegistry {
 
   /** Public tool catalog — no handler/validate functions leak out. */
   list() {
-    return [...this.tools.values()].map(({ name, description, parameters, risk }) => ({
-      name, description, parameters, risk
+    return [...this.tools.values()].map(({ name, description, parameters, risk, verify }) => ({
+      name, description, parameters, risk, hasVerify: !!verify
     }));
   }
 

@@ -9,8 +9,9 @@ const DB_PATH = path.join(os.tmpdir(), `sentinel-test-app-${crypto.randomUUID()}
 process.env.DB_PATH = DB_PATH;
 process.env.JWT_SECRET = 'test-jwt-secret-not-used-in-production';
 process.env.NODE_ENV = 'test';
+process.env.SENTINEL_SECRET_KEY = crypto.randomBytes(32).toString('hex');
 
-const { test, after } = require('node:test');
+const { test, after, before } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { migrate } = require('./db/migrate');
@@ -20,6 +21,9 @@ const { createApp } = require('./app');
 const { getSetting, setSetting } = require('./db/settings');
 const { SETUP_TOKEN_KEY } = require('./setup/bootstrap');
 const { countUsers } = require('./auth/users');
+const { _setClientForTesting, _resetClientForTesting } = require('./agent/client');
+const store = require('./incidents/store');
+const { upsertResource } = require('./graph/resources');
 
 // createApp() doesn't run server.js's bootstrap (ensureSetupToken), so
 // seed a setup token the same way it would, up front — tests below
@@ -28,6 +32,7 @@ const SETUP_TOKEN = crypto.randomBytes(24).toString('base64url');
 setSetting(SETUP_TOKEN_KEY, SETUP_TOKEN);
 
 after(() => {
+  _resetClientForTesting();
   for (const suffix of ['', '-wal', '-shm']) {
     try { fs.rmSync(DB_PATH + suffix); } catch { /* already gone */ }
   }
@@ -50,6 +55,25 @@ function extractCookie(res) {
   const raw = res.headers.get('set-cookie') || '';
   const match = raw.match(/sentinel_token=([^;]+)/);
   return match ? match[1] : null;
+}
+
+// The login route is rate-limited to 5 attempts/15min/IP (see
+// bcryptLimiter.js) — every test in this file shares 127.0.0.1, so the
+// Phase-3 route tests below log in exactly ONCE and reuse the resulting
+// JWT cookie across every withServer() call. The JWT + its auth_sessions
+// row are validated from the shared DB, not tied to any one server
+// instance/port, so the same cookie value works against a fresh
+// withServer() each time.
+let cachedAuthHeader = null;
+async function loginAndGetAuthHeader(base) {
+  if (cachedAuthHeader) return cachedAuthHeader;
+  const res = await fetch(`${base}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'admin', password: 'longenough123' })
+  });
+  cachedAuthHeader = { Cookie: `sentinel_token=${extractCookie(res)}` };
+  return cachedAuthHeader;
 }
 
 test('GET /health requires no auth', async () => {
@@ -184,5 +208,168 @@ test('logout revokes the session — the same cookie stops working afterward', a
 
     const protectedAfter = await fetch(`${base}/api/activity`, { headers: { Cookie: `sentinel_token=${cookie}` } });
     assert.equal(protectedAfter.status, 401, 'the same JWT should be rejected once its session is revoked');
+  });
+});
+
+// ── Settings/AI (Phase 3) ────────────────────────────────────────────────────
+
+test('GET /api/settings/ai reports unconfigured, and PUT/GET never leaks the raw key', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+
+    const before = await (await fetch(`${base}/api/settings/ai`, { headers: auth })).json();
+    assert.equal(before.configured, false);
+
+    const putRes = await fetch(`${base}/api/settings/ai`, {
+      method: 'PUT',
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'anthropic', model: 'claude-sonnet-5', apiKey: 'sk-ant-super-secret-value-123' })
+    });
+    assert.equal(putRes.status, 200);
+    const putBody = await putRes.json();
+    assert.equal(putBody.configured, true);
+    assert.ok(!JSON.stringify(putBody).includes('sk-ant-super-secret-value-123'));
+
+    const after2 = await (await fetch(`${base}/api/settings/ai`, { headers: auth })).json();
+    assert.equal(after2.provider, 'anthropic');
+    assert.ok(!JSON.stringify(after2).includes('sk-ant-super-secret-value-123'));
+
+    // clean up so later tests in this file see an unconfigured provider again
+    await fetch(`${base}/api/settings/ai`, { method: 'DELETE', headers: auth });
+  });
+});
+
+test('PUT /api/settings/ai rejects an unknown provider', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const res = await fetch(`${base}/api/settings/ai`, {
+      method: 'PUT',
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'not-a-real-provider', apiKey: 'x' })
+    });
+    assert.equal(res.status, 400);
+  });
+});
+
+// ── Tools & resources (Phase 3) ──────────────────────────────────────────────
+
+test('GET /api/tools proxies the agent catalog and requires auth', async () => {
+  await withServer(async (base) => {
+    _setClientForTesting({ listTools: async () => [{ name: 'get_system_metrics', risk: 'READ_ONLY' }] });
+
+    const unauthed = await fetch(`${base}/api/tools`);
+    assert.equal(unauthed.status, 401);
+
+    const auth = await loginAndGetAuthHeader(base);
+    const res = await fetch(`${base}/api/tools`, { headers: auth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.some(t => t.name === 'get_system_metrics'));
+    _resetClientForTesting();
+  });
+});
+
+test('POST /api/resources/relationships registers an edge visible via GET /api/resources', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const apiName = 'demo-api-' + crypto.randomUUID();
+    const dbName = 'demo-db-' + crypto.randomUUID();
+
+    const res = await fetch(`${base}/api/resources/relationships`, {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fromType: 'container', fromExternalId: apiName, toType: 'container', toExternalId: dbName, relationship: 'depends_on' })
+    });
+    assert.equal(res.status, 200);
+
+    const list = await (await fetch(`${base}/api/resources`, { headers: auth })).json();
+    assert.ok(list.some(r => r.external_id === apiName));
+    assert.ok(list.some(r => r.external_id === dbName));
+  });
+});
+
+// ── Incidents (Phase 3) ──────────────────────────────────────────────────────
+
+test('incident approval requires an actionId, executes via the agent only once approved, and never lets an illegal transition through', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+
+    let sawApproved = false;
+    _setClientForTesting({
+      listTools: async () => [{ name: 'restart_container', risk: 'MEDIUM_RISK' }],
+      callTool: async (name, params, opts) => { sawApproved = opts?.approved === true; return { restarted: true }; },
+      verifyTool: async () => ({ ok: true })
+    });
+
+    const resource = upsertResource({ type: 'container', externalId: 'http-test-' + crypto.randomUUID(), name: 'x' });
+    const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+    store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+    store.recordDiagnosis(incident.id, { rootCause: 'x', confidence: 0.9 });
+    const action = store.addAction(incident.id, { tool: 'restart_container', params: { id: 'x' }, claimedRisk: 'LOW', realRisk: 'MEDIUM_RISK', rationale: 'x' });
+    store.updateIncidentStatus(incident.id, 'AWAITING_APPROVAL');
+
+    // Dismiss requires no body; approve requires an actionId.
+    const missingActionId = await fetch(`${base}/api/incidents/${incident.id}/approve`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(missingActionId.status, 400);
+    assert.equal(sawApproved, false, 'the agent must never see approved:true until a real approval happens');
+
+    const approveRes = await fetch(`${base}/api/incidents/${incident.id}/approve`, {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actionId: action.id })
+    });
+    assert.equal(approveRes.status, 200);
+    assert.equal(sawApproved, true);
+    const resolved = await approveRes.json();
+    assert.equal(resolved.status, 'RESOLVED');
+
+    // The incident is now terminal — approving again is an illegal transition.
+    const secondApprove = await fetch(`${base}/api/incidents/${incident.id}/approve`, {
+      method: 'POST',
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actionId: action.id })
+    });
+    assert.equal(secondApprove.status, 409);
+
+    _resetClientForTesting();
+  });
+});
+
+test('GET /api/incidents and GET /api/incidents/:id return the incident with its evidence and actions', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const resource = upsertResource({ type: 'service', externalId: 'svc-http-' + crypto.randomUUID(), name: 'svc' });
+    const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'service_inactive', triggerSummary: 'inactive' });
+    store.addEvidence(incident.id, [{ resourceId: resource.id, sourceTool: 'get_service_status', summary: 'inactive', data: {} }]);
+
+    const listRes = await fetch(`${base}/api/incidents`, { headers: auth });
+    const list = await listRes.json();
+    assert.ok(list.some(i => i.id === incident.id));
+
+    const detailRes = await fetch(`${base}/api/incidents/${incident.id}`, { headers: auth });
+    const detail = await detailRes.json();
+    assert.equal(detail.id, incident.id);
+    assert.equal(detail.evidence.length, 1);
+  });
+});
+
+test('POST /api/incidents/:id/dismiss moves a non-terminal incident to DISMISSED', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const resource = upsertResource({ type: 'container', externalId: 'dismiss-http-' + crypto.randomUUID(), name: 'x' });
+    const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+
+    const res = await fetch(`${base}/api/incidents/${incident.id}/dismiss`, { method: 'POST', headers: auth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.status, 'DISMISSED');
+  });
+});
+
+test('incident routes 404 for an unknown id', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const res = await fetch(`${base}/api/incidents/999999`, { headers: auth });
+    assert.equal(res.status, 404);
   });
 });

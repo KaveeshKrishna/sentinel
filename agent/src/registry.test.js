@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ToolRegistry } = require('./registry');
 
-test('register + list exposes only name/description/parameters/risk', () => {
+test('register + list exposes only name/description/parameters/risk/hasVerify', () => {
   const registry = new ToolRegistry();
   registry.register({
     name: 'noop',
@@ -15,8 +15,21 @@ test('register + list exposes only name/description/parameters/risk', () => {
   });
   const list = registry.list();
   assert.equal(list.length, 1);
-  assert.deepEqual(Object.keys(list[0]).sort(), ['description', 'name', 'parameters', 'risk']);
+  assert.deepEqual(Object.keys(list[0]).sort(), ['description', 'hasVerify', 'name', 'parameters', 'risk']);
   assert.equal(list[0].name, 'noop');
+  assert.equal(list[0].hasVerify, false);
+});
+
+test('list reports hasVerify: true for a tool with a verify function', () => {
+  const registry = new ToolRegistry();
+  registry.register({
+    name: 'with_verify',
+    description: 'has a check',
+    risk: 'MEDIUM_RISK',
+    handler: async () => ({ ok: true }),
+    verify: async () => ({ ok: true })
+  });
+  assert.equal(registry.list()[0].hasVerify, true);
 });
 
 test('register rejects an invalid risk level', () => {

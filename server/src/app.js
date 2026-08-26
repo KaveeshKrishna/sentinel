@@ -17,6 +17,10 @@ const recordingsRoutes   = require('./routes/recordings');
 const websitesRoutes     = require('./routes/websites');
 const networkRoutes      = require('./routes/network');
 const activityRoutes     = require('./routes/activity');
+const incidentsRoutes    = require('./routes/incidents');
+const settingsRoutes     = require('./routes/settings');
+const toolsRoutes        = require('./routes/tools');
+const resourcesRoutes    = require('./routes/resources');
 
 /**
  * Build the Express app. Split out from server.js (which additionally
@@ -60,6 +64,10 @@ function createApp() {
   app.use('/api/websites',    authMiddleware, websitesRoutes);
   app.use('/api/network',     authMiddleware, networkRoutes);
   app.use('/api/activity',    authMiddleware, activityRoutes);
+  app.use('/api/incidents',   authMiddleware, incidentsRoutes);
+  app.use('/api/settings',    authMiddleware, settingsRoutes);
+  app.use('/api/tools',       authMiddleware, toolsRoutes);
+  app.use('/api/resources',   authMiddleware, resourcesRoutes);
 
   // ── Frontend static files ────────────────────────────────────────────────
   const frontendDist = path.join(__dirname, '../public');

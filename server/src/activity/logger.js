@@ -18,7 +18,15 @@ const EVENT_META = {
   RECORDING_STOP:       { icon: '⏹',  color: '#7d8590' },
   SYSTEM_START:         { icon: '⬆',  color: '#a855f7' },
   CADDY_RELOAD:         { icon: '🌐', color: '#06b6d4' },
-  SETUP_COMPLETED:      { icon: '🛡',  color: '#a855f7' }
+  SETUP_COMPLETED:      { icon: '🛡',  color: '#a855f7' },
+  INCIDENT_DETECTED:        { icon: '🔴', color: '#ef4444' },
+  INCIDENT_DIAGNOSED:       { icon: '🧠', color: '#a855f7' },
+  INCIDENT_APPROVED:        { icon: '✅', color: '#22c55e' },
+  INCIDENT_DISMISSED:       { icon: '🚫', color: '#7d8590' },
+  INCIDENT_ACTION_EXECUTED: { icon: '⚙',  color: '#3b82f6' },
+  INCIDENT_RESOLVED:        { icon: '✔',  color: '#22c55e' },
+  INCIDENT_FAILED:          { icon: '❌', color: '#ef4444' },
+  AI_CALL_FAILED:           { icon: '⚠',  color: '#f59e0b' }
 };
 
 let insertStmt = null;

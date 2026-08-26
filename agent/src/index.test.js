@@ -28,6 +28,14 @@ function buildTestRegistry() {
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     handler: async () => ({ didIt: true })
   });
+  registry.register({
+    name: 'checkable_action',
+    description: 'a medium-risk action with a verify check',
+    risk: 'MEDIUM_RISK',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    handler: async () => ({ didIt: true }),
+    verify: async () => ({ ok: true, detail: 'confirmed' })
+  });
   return registry;
 }
 
@@ -111,6 +119,38 @@ test('an unknown tool name is rejected with 404', async () => {
       body: JSON.stringify({})
     });
     assert.equal(res.status, 404);
+  });
+});
+
+test('POST /tools/:name/verify runs the verify check when one is defined', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(`${base}/tools/checkable_action/verify`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer integration-test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.result.ok, true);
+    assert.equal(body.result.detail, 'confirmed');
+  });
+});
+
+test('POST /tools/:name/verify 404s for a tool with no verify check', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(`${base}/tools/dangerous_action/verify`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer integration-test-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    assert.equal(res.status, 404);
+  });
+});
+
+test('POST /tools/:name/verify requires no approval header, only auth', async () => {
+  await withServer(async (base) => {
+    const unauthed = await fetch(`${base}/tools/checkable_action/verify`, { method: 'POST' });
+    assert.equal(unauthed.status, 401);
   });
 });
 

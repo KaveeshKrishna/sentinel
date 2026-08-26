@@ -54,6 +54,26 @@ function createApp(registry) {
     }
   });
 
+  // Runs a tool's post-action check (e.g. "is the container actually
+  // Running now?"). Never mutates anything, so it needs no approval
+  // gate — just the same bearer-token auth as everything else on this
+  // socket. The server-side verification engine (Phase 3) polls this
+  // with its own retry/timeout policy; this endpoint itself is a single
+  // point-in-time check.
+  app.post('/tools/:name/verify', async (req, res) => {
+    const { name } = req.params;
+    const tool = registry.get(name);
+    if (!tool) return res.status(404).json({ error: `Unknown tool "${name}"` });
+    if (!tool.verify) return res.status(404).json({ error: `Tool "${name}" has no verify check` });
+
+    try {
+      const result = await tool.verify(req.body || {});
+      res.json({ ok: true, result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Never let a thrown error leak a stack trace to the caller.
   // eslint-disable-next-line no-unused-vars
   app.use((err, _req, res, _next) => {
