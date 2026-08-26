@@ -4,20 +4,24 @@
 #  Stage 2: Production Node.js backend + frontend dist
 # ════════════════════════════════════════════════════
 
+# Pinned by digest for reproducible builds — node:20-alpine as of this commit.
+# Update deliberately: `docker pull node:20-alpine && docker inspect node:20-alpine --format '{{index .RepoDigests 0}}'`
+ARG NODE_IMAGE=node@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+
 # ── Stage 1: Frontend build ───────────────────────
-FROM node:20-alpine AS frontend-build
+FROM ${NODE_IMAGE} AS frontend-build
 
 WORKDIR /build
 
 # Cache npm install separately from source copy
 COPY frontend/package*.json ./
-RUN npm install --no-audit
+RUN npm ci --no-audit
 
 COPY frontend/ .
 RUN npm run build
 
 # ── Stage 2: Backend production image ────────────
-FROM node:20-alpine AS production
+FROM ${NODE_IMAGE} AS production
 
 # Native module build deps (for bcrypt, better-sqlite3)
 RUN apk add --no-cache python3 make g++ linux-headers util-linux
@@ -26,7 +30,7 @@ WORKDIR /app
 
 # Install backend dependencies (production only)
 COPY backend/package*.json ./
-RUN npm install --no-audit --omit=dev
+RUN npm ci --no-audit --omit=dev
 
 # Copy backend source
 COPY backend/src      ./src

@@ -75,7 +75,7 @@ export default function Network() {
       <div className="section-grid-2">
         <div className="card">
           <div className="card-title">🌍 IP Addresses</div>
-          <InfoRow k="LAN IP"    v={stats?.lanIp || '192.168.1.50'} />
+          <InfoRow k="LAN IP"    v={stats?.lanIp || '—'} />
           <InfoRow k="Public IP" v={stats?.publicIp || '—'} />
           <div style={{ marginTop: 12 }}>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 8 }}>Cloudflare Tunnel</div>

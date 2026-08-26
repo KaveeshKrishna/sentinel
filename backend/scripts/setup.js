@@ -16,6 +16,22 @@ const bcrypt   = require('bcrypt');
 const crypto   = require('crypto');
 const fs       = require('fs');
 const path     = require('path');
+const os       = require('os');
+
+/**
+ * Best-effort detection of the primary LAN IP (first non-internal IPv4).
+ * Falls back to an empty string if none is found — the dashboard treats
+ * a blank LAN_IP as "unknown" rather than showing a wrong address.
+ */
+function detectLanIp() {
+  const ifaces = os.networkInterfaces();
+  for (const entries of Object.values(ifaces)) {
+    for (const entry of entries || []) {
+      if (entry.family === 'IPv4' && !entry.internal) return entry.address;
+    }
+  }
+  return '';
+}
 
 const ENV_FILE    = path.resolve(__dirname, '../.env');
 const ENV_EXAMPLE = path.resolve(__dirname, '../.env.example');
@@ -70,7 +86,7 @@ ADMIN_PASSWORD_HASH=${hash}
 JWT_SECRET=${jwtSecret}
 
 # Network info (displayed on dashboard)
-LAN_IP=192.168.1.50
+LAN_IP=${detectLanIp()}
 PUBLIC_IP=${publicIp}
 
 # Runtime

@@ -9,7 +9,7 @@
 - **Docker** — live container table with logs, start/stop/restart from the UI
 - **Websites** — auto-discovered from Caddyfile with response-time pinging
 - **Network** — live bandwidth, Caddy JSON log analytics (req/min, 4xx/5xx, avg latency)
-- **Storage** — disk usage with future SSD placeholder
+- **Storage** — disk usage, with support for additional-disk SMART data once detected
 - **Services** — Docker, Caddy, Cloudflared, SSH, UFW — status + systemctl control
 - **Deployments** — git repos in `/srv/apps` with Pull & Deploy (dirty-check protected)
 - **Activity Timeline** — 500-event ring buffer (crashes, deploys, restarts)
@@ -30,7 +30,7 @@ sudo systemctl reload caddy
 ### 2. Run setup wizard (generates bcrypt hash + JWT secret)
 
 ```bash
-cd /srv/apps/sentinel-kkp-node/backend
+cd backend   # from the repo root
 npm install
 node scripts/setup.js
 ```
@@ -40,14 +40,18 @@ This creates `backend/.env` with hashed credentials. **Never commit this file.**
 ### 3. Build and start
 
 ```bash
-cd /srv/apps/sentinel-kkp-node
-docker compose up -d --build
+docker compose up -d --build   # from the repo root
 ```
 
 ### 4. Access
 
-Visit: `http://sentinel.your-domain.example` (via Cloudflare Tunnel)
-Or locally: `http://localhost:8888`
+Visit `http://localhost:8888`, or your own domain if you've put Sentinel
+behind a reverse proxy (see `examples/Caddyfile.example`).
+
+> **Note:** Sentinel is being migrated to a native systemd installation
+> (see `ARCHITECTURE.md`). The Docker-based Quick Start above still works for the
+> current release; the installer instructions here will change once that
+> lands.
 
 ---
 
@@ -105,7 +109,7 @@ Run `node scripts/setup.js` to generate them interactively.
 ## Project Structure
 
 ```
-sentinel-kkp-node/
+sentinel/
 ├── backend/
 │   ├── src/
 │   │   ├── server.js          # Express + WebSocket bootstrap

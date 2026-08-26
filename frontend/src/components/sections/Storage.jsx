@@ -70,15 +70,15 @@ export default function Storage() {
         )}
       </div>
 
-      {/* Future SSD placeholder */}
+      {/* Additional disks — SMART data appears here once detected */}
       <div className="card" style={{ opacity: 0.5 }}>
-        <div className="card-title">📦 External SSD</div>
+        <div className="card-title">📦 Additional Disks</div>
         <div style={{ display: 'flex', align: 'center', gap: 12, color: 'var(--text-muted)', fontSize: '0.9rem' }}>
           <span style={{ fontSize: '1.5rem' }}>🔌</span>
           <div>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>Not Installed</div>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>None Detected</div>
             <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>
-              Future 1 TB SSD — SMART data will appear here once connected
+              SMART data for additional disks will appear here once connected
             </div>
           </div>
         </div>

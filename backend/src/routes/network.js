@@ -2,11 +2,25 @@
 
 const express = require('express');
 const fs = require('fs');
+const os = require('os');
 const readline = require('readline');
 const router = express.Router();
 const { getSshSessions, getNetworkStats, getPrimaryInterface } = require('../collectors/network');
 
 const CADDY_LOG = process.env.CADDY_LOG || '/host/caddy/logs/access.log';
+
+/**
+ * Best-effort detection of the primary LAN IP when LAN_IP isn't configured.
+ */
+function detectLanIp() {
+  const ifaces = os.networkInterfaces();
+  for (const entries of Object.values(ifaces)) {
+    for (const entry of entries || []) {
+      if (entry.family === 'IPv4' && !entry.internal) return entry.address;
+    }
+  }
+  return null;
+}
 
 /**
  * Parse Caddy JSON access logs from the last `minutes` minutes.
@@ -98,7 +112,7 @@ router.get('/stats', async (_req, res) => {
       sshSessions:       sshCount,
       cloudflareTunnel,
       publicIp:          process.env.PUBLIC_IP  || null,
-      lanIp:             process.env.LAN_IP      || '192.168.1.50'
+      lanIp:             process.env.LAN_IP      || detectLanIp()
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
