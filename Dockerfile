@@ -1,5 +1,9 @@
 # ════════════════════════════════════════════════════
-#  Sentinel — Multi-stage Dockerfile
+#  LEGACY — pre-migration monolithic Dockerfile.
+#  See the header comment in compose.yml: this builds server/ without
+#  a running sentinel-agent, so host-touching routes will fail. Kept
+#  only for emergency rebuilds during the migration window.
+#
 #  Stage 1: Build React/Vite frontend
 #  Stage 2: Production Node.js backend + frontend dist
 # ════════════════════════════════════════════════════
@@ -28,13 +32,13 @@ RUN apk add --no-cache python3 make g++ linux-headers util-linux
 
 WORKDIR /app
 
-# Install backend dependencies (production only)
-COPY backend/package*.json ./
+# Install server dependencies (production only)
+COPY server/package*.json ./
 RUN npm ci --no-audit --omit=dev
 
-# Copy backend source
-COPY backend/src      ./src
-COPY backend/scripts  ./scripts
+# Copy server source
+COPY server/src       ./src
+COPY server/scripts   ./scripts
 
 # Copy frontend build output → served as static files
 COPY --from=frontend-build /build/dist ./public

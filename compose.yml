@@ -1,3 +1,19 @@
+# ════════════════════════════════════════════════════════════════════
+# LEGACY — pre-migration monolithic deployment.
+#
+# This file describes the single-container architecture Sentinel is
+# being migrated away from (see ARCHITECTURE.md): one privileged container
+# with `nsenter`-based systemctl access and a read-write Docker socket.
+#
+# As of the Phase 1 agent/server split, server/ no longer talks to
+# Docker or systemctl directly — it calls a sentinel-agent process over
+# a Unix socket that this compose file does not run. Building this
+# image now produces a server that cannot reach any host tool until an
+# agent is also running. It is kept only so the already-running
+# production container can be rebuilt in an emergency during the
+# migration window; it is not the target deployment. See Phase 2 for
+# the native systemd installer that replaces it.
+# ════════════════════════════════════════════════════════════════════
 services:
   sentinel:
     build:
@@ -7,7 +23,7 @@ services:
     ports:
       - "127.0.0.1:8888:3000"
     env_file:
-      - ./backend/.env
+      - ./server/.env
     volumes:
       # Docker socket — for container management and event streaming
       - /var/run/docker.sock:/var/run/docker.sock

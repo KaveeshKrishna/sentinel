@@ -1,20 +1,21 @@
 # ── Secrets & environment ──────────────────────────
-backend/.env
 .env
 .env.*
 !.env.example
 
 # ── Node modules ──────────────────────────────────
 node_modules/
-backend/node_modules/
+server/node_modules/
+agent/node_modules/
 frontend/node_modules/
+cli/node_modules/
 
 # ── Build outputs ─────────────────────────────────
 frontend/dist/
-backend/public/
+server/public/
 
 # ── Runtime data ──────────────────────────────────
-backend/data/
+server/data/
 *.db
 *.sqlite
 *.sqlite3
