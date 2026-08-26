@@ -1,0 +1,12 @@
+{
+  "name": "sentinel-cli",
+  "version": "1.0.0",
+  "description": "The `sentinel` management CLI — status, start/stop/restart, logs, doctor, config, update, uninstall.",
+  "private": true,
+  "bin": {
+    "sentinel": "./sentinel.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

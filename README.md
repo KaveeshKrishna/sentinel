@@ -1,6 +1,7 @@
 # Sentinel
 
-> Personal VPS Operations Dashboard — Self-hosted, password-protected, real-time.
+> Self-hosted VPS operations platform — password-protected, real-time,
+> installable on your own server.
 
 ## Features
 
@@ -14,57 +15,70 @@
 - **Deployments** — git repos in `/srv/apps` with Pull & Deploy (dirty-check protected)
 - **Activity Timeline** — 500-event ring buffer (crashes, deploys, restarts)
 - **Recording Mode** — manual VPS health sessions stored in SQLite with analytics + CSV/JSON export
+- **Installer + CLI** — `install.sh` sets up two systemd services on a
+  fresh VPS; `sentinel status|doctor|logs|restart|uninstall` manages them afterward
 
 ---
 
 ## Quick Start
 
-> **Sentinel is mid-migration** to a two-process architecture — an
-> unprivileged `server/` (UI, API, AI orchestration) talking to a
-> privileged `agent/` (the only process with host/systemctl/Docker access)
-> over a local Unix socket. See `ARCHITECTURE.md` for the full architecture and
-> status. **The old single-container `docker compose up` path (below) no
-> longer works on its own** — `server/` now requires a running `agent/`
-> and there is no compose service for it yet. A one-line installer for
-> the native systemd deployment is coming in the next phase.
->
-> Until then, to run Sentinel locally for development, start both
-> processes by hand from the repo root (each needs `npm install` in its
-> own directory first):
->
-> ```bash
-> # terminal 1 — the privileged agent
-> cd agent && npm install
-> SENTINEL_AGENT_SOCKET=/tmp/sentinel-agent.sock \
-> SENTINEL_AGENT_TOKEN=dev-only-token \
-> node src/index.js
->
-> # terminal 2 — the control plane
-> cd server && npm install
-> node scripts/setup.js   # generates server/.env with admin credentials
-> SENTINEL_AGENT_SOCKET=/tmp/sentinel-agent.sock \
-> SENTINEL_AGENT_TOKEN=dev-only-token \
-> node src/server.js
-> ```
->
-> Then visit `http://localhost:3000` (or wherever `PORT` in `server/.env`
-> points). Some tools (systemctl, Docker) will report "unknown" or fail
-> gracefully if you're not running as root / don't have Docker installed
-> — that's expected outside a real install.
+Sentinel installs as two systemd services on your own Ubuntu/Debian
+VPS: an unprivileged `sentinel-server` (UI, API) talking to a
+privileged `sentinel-agent` (the only process with host/systemctl/Docker
+access) over a local Unix socket. See `ARCHITECTURE.md` for the full
+architecture.
 
-### Legacy Docker Compose path (currently non-functional, kept for reference)
+### Install
 
 ```bash
-sudo mkdir -p /var/log/caddy
-sudo chown caddy:caddy /var/log/caddy
-sudo systemctl reload caddy
-
-cd server && npm install && node scripts/setup.js   # generates server/.env
-docker compose up -d --build                        # from the repo root
+git clone <this-repo-url> sentinel && cd sentinel
+sudo bash install.sh
 ```
 
-Visit `http://localhost:8888`, or your own domain if you've put Sentinel
-behind a reverse proxy (see `examples/Caddyfile.example`).
+*(There's no published release yet, so this is a local-checkout install
+rather than a one-line `curl | bash` — `install.sh` documents why, and
+what it takes once a release exists.)*
+
+The installer is idempotent — re-run it any time to pick up new code
+without touching your existing configuration or database. When it
+finishes, it prints the web UI's address and how to find the one-time
+setup token:
+
+```bash
+sentinel logs server | grep -A2 'Setup token'
+```
+
+Visit `http://<your-server>:3000/setup`, paste that token, and choose an
+admin username/password — that's the whole setup flow, no config files
+to hand-edit.
+
+### Manage a running install
+
+```bash
+sentinel status      # are both services up?
+sentinel doctor       # full health check — OS, Node, units, socket, DB, disk, capabilities
+sentinel logs [agent|server] [--follow]
+sentinel restart
+sentinel uninstall [--purge]   # --purge also removes config + database
+```
+
+### For development
+
+To run both processes by hand without the installer (e.g. to iterate on
+source), see `ARCHITECTURE.md`'s development notes — in short, start `agent/`
+and `server/` directly with `node`, pointing both at the same
+`SENTINEL_AGENT_SOCKET`/`SENTINEL_AGENT_TOKEN` values. Some agent tools
+(systemctl, Docker) will report "unknown" or fail gracefully if you're
+not running as root / don't have Docker installed — expected outside a
+real install.
+
+### Legacy Docker Compose path (non-functional, kept for reference only)
+
+The original single-container deployment (`compose.yml`/`Dockerfile`)
+predates the agent/server split and no longer works — `server/` now
+requires a running `agent/` that compose doesn't start. It's kept only
+so the previous production container can be rebuilt in an emergency
+during the migration window. Use `install.sh` instead.
 
 ---
 
@@ -74,7 +88,7 @@ Sentinel is split into two processes across a privilege boundary — see
 `ARCHITECTURE.md` for the full rationale and diagram.
 
 ```
-Browser → server/ (unprivileged: UI, API, WebSocket, auth, AI, SQLite)
+Browser → server/ (unprivileged: UI, API, WebSocket, auth, SQLite)
               │  Unix socket + bearer token
               ▼
           agent/ (privileged: the only process with host access)
@@ -82,6 +96,9 @@ Browser → server/ (unprivileged: UI, API, WebSocket, auth, AI, SQLite)
               ▼
    /proc · /sys · systemctl · Docker socket · git · Caddy config/logs
 ```
+
+AI orchestration and the incident engine live in `server/` as well but
+aren't built yet — see `ARCHITECTURE.md`'s roadmap.
 
 `server/` never touches `/proc`, systemctl, or the Docker socket
 directly — every host-facing operation is a named tool call to `agent/`,
@@ -92,20 +109,41 @@ executing it.
 
 ## Security
 
-- All routes behind JWT (HTTP-only cookie, 12h expiry)
-- Passwords stored as bcrypt hashes (cost=12)
+- All routes behind JWT (HTTP-only cookie, 12h expiry, HS256-pinned),
+  with server-side session revocation — logout actually invalidates the
+  token immediately rather than only clearing the browser's copy
+- Passwords stored as bcrypt hashes (cost=12); login is rate-limited
+  (5 attempts/15min per IP) with a fixed-cost dummy comparison on
+  unknown usernames so response time doesn't leak which usernames exist
+- Session cookie's `secure` flag reflects the actual request protocol
+  (including behind a reverse proxy via `X-Forwarded-Proto`)
 - WebSocket validated at upgrade handshake
-- Constant-time username comparison (timing-attack resistant)
 - Helmet.js headers on all responses
-- Strict service/action allowlists for systemctl commands
+- The agent (see Architecture) independently validates every tool call's
+  schema and risk level — `server/` cannot execute a privileged operation
+  the agent itself wouldn't also approve
+- No admin credentials in environment variables or config files — the
+  first-run `/setup` wizard is gated by a one-time token printed to the
+  server's own console, and the admin account lives in SQLite (bcrypt-hashed)
+- `sentinel-server.service` runs under systemd sandboxing
+  (`NoNewPrivileges`, `ProtectHome`, `ProtectKernelModules`, explicit
+  `ReadWritePaths`, etc.) as an additional layer beneath the agent
+  boundary — see `packaging/systemd/`
+- **Not yet done** (tracked in `ARCHITECTURE.md`): WebSocket heartbeat/Origin
+  checking, request logging, and a global error handler that stops
+  echoing raw error messages to clients
 
 ---
 
 ## Environment Variables
 
-Configuration is per-package: see `server/.env.example` and
-`agent/.env.example`. Run `cd server && node scripts/setup.js` to
-generate `server/.env` (admin credentials, JWT secret) interactively.
+`install.sh` generates and writes these for you at `/etc/sentinel/agent.env`
+and `/etc/sentinel/server.env` (0640, root:sentinel) — you don't need to
+hand-edit them for a normal install. For manual/development setups, see
+`server/.env.example` and `agent/.env.example` for the full variable
+list; set `JWT_SECRET` yourself (e.g. `openssl rand -hex 32`), then
+create the admin account through the one-time `/setup` wizard the server
+prints on first boot.
 
 ---
 
@@ -124,15 +162,16 @@ generate `server/.env` (admin credentials, JWT secret) interactively.
 ```
 sentinel/
 ├── server/                    # unprivileged control plane
-│   ├── src/
-│   │   ├── server.js          # Express + WebSocket bootstrap
-│   │   ├── auth/              # JWT + bcrypt auth
-│   │   ├── agent/             # client for talking to agent/ over its socket
-│   │   ├── routes/            # REST API routes (thin proxies to agent tools)
-│   │   ├── websocket/         # 1-second broadcast loop (polls agent/)
-│   │   ├── recording/         # SQLite engine + schema
-│   │   └── activity/          # Event log + Docker-event poller
-│   └── scripts/setup.js       # Interactive credential setup
+│   └── src/
+│       ├── server.js          # Express + WebSocket bootstrap
+│       ├── auth/               # JWT + bcrypt auth, users, sessions, rate limit
+│       ├── setup/              # first-run web wizard (one-time setup token)
+│       ├── db/                 # shared connection + migration runner
+│       ├── agent/              # client for talking to agent/ over its socket
+│       ├── routes/             # REST API routes (thin proxies to agent tools)
+│       ├── websocket/          # 1-second broadcast loop (polls agent/)
+│       ├── recording/          # SQLite engine + schema
+│       └── activity/           # persisted event log + Docker-event poller
 ├── agent/                     # privileged host agent (root in production)
 │   └── src/
 │       ├── index.js           # Unix-socket HTTP server + bootstrap
@@ -147,10 +186,13 @@ sentinel/
 │       ├── pages/             # Login, Dashboard
 │       ├── components/        # Shared + per-section components
 │       └── hooks/             # WebSocket + Auth context
-├── cli/                       # planned: the `sentinel` management CLI
-├── packaging/                 # planned: systemd units + install.sh
+├── cli/                        # the `sentinel` management CLI
+│   ├── sentinel.js             # status/start/stop/restart/logs/doctor/config/uninstall
+│   └── lib/                    # systemd wrapper, doctor checks, install paths
+├── packaging/systemd/          # sentinel-agent.service, sentinel-server.service
+├── install.sh                  # the installer (see Quick Start above)
 ├── examples/Caddyfile.example
-├── compose.yml                # legacy — see Quick Start note above
-├── Dockerfile                 # legacy — see Quick Start note above
+├── compose.yml                 # legacy — see Quick Start note above
+├── Dockerfile                  # legacy — see Quick Start note above
 └── .env.example
 ```

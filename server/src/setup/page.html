@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Sentinel — First-Run Setup</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --accent: #3b82f6; --text: #e6edf3; --text-muted: #8b949e;
+    --red: #ef4444; --green: #22c55e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  }
+  .card {
+    width: 100%; max-width: 420px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 12px; padding: 32px; margin: 16px;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  p.sub { color: var(--text-muted); margin: 0 0 24px; font-size: 0.9rem; }
+  label { display: block; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px; margin-top: 16px; }
+  input {
+    width: 100%; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text); font-size: 0.95rem;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  button {
+    width: 100%; margin-top: 24px; padding: 11px; background: var(--accent); color: #fff;
+    border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .msg { margin-top: 16px; font-size: 0.85rem; padding: 10px 12px; border-radius: 8px; display: none; }
+  .msg.error { display: block; background: rgba(239,68,68,0.12); color: var(--red); }
+  .msg.success { display: block; background: rgba(34,197,94,0.12); color: var(--green); }
+  .hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div id="loading">Loading…</div>
+
+    <div id="already-done" style="display:none">
+      <h1>Already configured</h1>
+      <p class="sub">Sentinel already has an administrator account.</p>
+      <button onclick="window.location.href='/'">Go to login</button>
+    </div>
+
+    <form id="setup-form" style="display:none">
+      <h1>Set up Sentinel</h1>
+      <p class="sub">Create the first administrator account using the setup token printed to the server's console/logs.</p>
+
+      <label for="token">Setup token</label>
+      <input id="token" name="token" type="text" autocomplete="off" required>
+
+      <label for="username">Admin username</label>
+      <input id="username" name="username" type="text" autocomplete="username" required>
+
+      <label for="password">Admin password</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+      <div class="hint">Minimum 8 characters.</div>
+
+      <button type="submit" id="submit-btn">Create account</button>
+      <div id="msg" class="msg"></div>
+    </form>
+  </div>
+
+  <script>
+    const loading = document.getElementById('loading');
+    const alreadyDone = document.getElementById('already-done');
+    const form = document.getElementById('setup-form');
+    const msg = document.getElementById('msg');
+    const submitBtn = document.getElementById('submit-btn');
+
+    function showMsg(text, kind) {
+      msg.textContent = text;
+      msg.className = 'msg ' + kind;
+    }
+
+    fetch('/api/setup/status')
+      .then(r => r.json())
+      .then(data => {
+        loading.style.display = 'none';
+        if (data.needsSetup) {
+          form.style.display = 'block';
+        } else {
+          alreadyDone.style.display = 'block';
+        }
+      })
+      .catch(() => {
+        loading.textContent = 'Could not reach the server. Refresh to try again.';
+      });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      submitBtn.disabled = true;
+      msg.className = 'msg';
+
+      const body = {
+        token: document.getElementById('token').value,
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value
+      };
+
+      try {
+        const res = await fetch('/api/setup/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Setup failed');
+
+        showMsg('Account created — redirecting…', 'success');
+        setTimeout(() => { window.location.href = '/'; }, 800);
+      } catch (err) {
+        showMsg(err.message, 'error');
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

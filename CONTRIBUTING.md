@@ -40,6 +40,34 @@ cd server && npm test
 cd agent  && npm test
 ```
 
+If you don't have Node installed locally, run tests the way this
+project's own development has: through an ephemeral container, no host
+install required —
+
+```bash
+docker run --rm -v "$PWD:/repo" -w /repo/server node:20-alpine node --test src
+docker run --rm -v "$PWD:/repo" -w /repo/agent  node:20-alpine node --test src
+```
+
+`install.sh` changes should be checked with shellcheck and, ideally,
+actually run — a systemd-capable container (e.g. `jrei/systemd-ubuntu`)
+lets you exercise real `systemctl`/`journalctl` without touching your
+own machine:
+
+```bash
+docker run --rm -v "$PWD:/repo:ro" koalaman/shellcheck:stable /repo/install.sh
+
+docker run -d --name sentinel-test --privileged --cgroupns=host \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:rw jrei/systemd-ubuntu:24.04
+docker cp . sentinel-test:/opt/sentinel
+docker exec sentinel-test bash -c "cd /opt/sentinel && bash install.sh"
+docker exec sentinel-test sentinel doctor
+docker rm -f sentinel-test
+```
+
+`cli/` has no automated tests yet (syntax-checked only) — the installer
+run above is its real integration test.
+
 ## Commit style
 
 Use conventional prefixes where it helps: `feat:`, `fix:`, `refactor:`,
