@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { api } from '../../api/client';
 
 function fmt(ms) {
   const s = Math.floor(ms / 1000);
@@ -16,8 +17,7 @@ export default function RecordingControl() {
 
   async function fetchState() {
     try {
-      const r = await fetch('/api/recordings/state');
-      const d = await r.json();
+      const d = await api.get('/recordings/state');
       setState(d);
       setElapsed(d.elapsed || 0);
     } catch {}
@@ -44,13 +44,7 @@ export default function RecordingControl() {
   async function start() {
     setLoading(true);
     try {
-      const r = await fetch('/api/recordings/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim() || undefined })
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
+      const d = await api.post('/recordings/start', { name: name.trim() || undefined });
       setState(d);
       setName('');
     } catch (err) {
@@ -63,9 +57,7 @@ export default function RecordingControl() {
   async function stop() {
     setLoading(true);
     try {
-      const r = await fetch('/api/recordings/stop', { method: 'POST' });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
+      const d = await api.post('/recordings/stop');
       setState({ ...d, recording: false });
     } catch (err) {
       alert(err.message);

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { api } from '../../api/client';
 
 function timeStr(ts) {
   const d = new Date(ts);
@@ -12,8 +13,7 @@ export default function Activity() {
   useEffect(() => {
     async function load() {
       try {
-        const r = await fetch('/api/activity?limit=500');
-        setEvents(await r.json());
+        setEvents(await api.get('/activity?limit=500'));
       } finally {
         setLoading(false);
       }

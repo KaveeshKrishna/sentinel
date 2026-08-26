@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { api } from '../../api/client';
 
 const SERVICE_INFO = {
   docker:      { icon: '🐳', label: 'Docker' },
@@ -77,15 +78,14 @@ export default function Services() {
 
   async function load() {
     try {
-      const r = await fetch('/api/services');
-      setStatuses(await r.json());
+      setStatuses(await api.get('/services'));
     } finally {
       setLoading(false);
     }
   }
 
   async function handleAction(service, action) {
-    await fetch(`/api/services/${service}/${action}`, { method: 'POST' });
+    await api.post(`/services/${service}/${action}`);
     await load();
   }
 

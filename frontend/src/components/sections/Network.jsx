@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { api } from '../../api/client';
 import { useMetrics } from '../../hooks/useWebSocket';
 import Sparkline from '../shared/Sparkline';
 
@@ -33,7 +34,7 @@ export default function Network() {
 
   useEffect(() => {
     async function load() {
-      try { const r = await fetch('/api/network/stats'); setStats(await r.json()); } catch {}
+      try { setStats(await api.get('/network/stats')); } catch {}
     }
     load();
     const poll = setInterval(load, 10000);

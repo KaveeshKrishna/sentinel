@@ -12,7 +12,17 @@ const STATUS_MAP = {
   starting:   { label: 'Starting',  cls: 'badge-yellow' },
   paused:     { label: 'Paused',    cls: 'badge-yellow' },
   unknown:    { label: 'Unknown',   cls: 'badge-gray'   },
-  'N/A':      { label: 'N/A',       cls: 'badge-gray'   }
+  'N/A':      { label: 'N/A',       cls: 'badge-gray'   },
+
+  // Incident states
+  detected:          { label: 'Detected',          cls: 'badge-yellow' },
+  investigating:     { label: 'Investigating',     cls: 'badge-yellow' },
+  diagnosed:         { label: 'Diagnosed',          cls: 'badge-blue'   },
+  awaiting_approval: { label: 'Awaiting Approval',  cls: 'badge-blue'   },
+  remediating:       { label: 'Remediating',        cls: 'badge-blue'   },
+  verifying:         { label: 'Verifying',          cls: 'badge-blue'   },
+  resolved:          { label: 'Resolved',           cls: 'badge-green'  },
+  dismissed:         { label: 'Dismissed',          cls: 'badge-gray'   }
 };
 
 export default function StatusBadge({ status }) {

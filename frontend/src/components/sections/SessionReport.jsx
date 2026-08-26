@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { api } from '../../api/client';
 import {
   Chart as ChartJS,
   CategoryScale, LinearScale, PointElement, LineElement,
@@ -61,8 +62,7 @@ export default function SessionReport({ sessionId, onBack, onDeleted }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/recordings/${sessionId}`)
-      .then(r => r.json())
+    api.get(`/recordings/${sessionId}`)
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));
   }, [sessionId]);
@@ -99,7 +99,7 @@ export default function SessionReport({ sessionId, onBack, onDeleted }) {
             className="btn btn-danger btn-sm"
             onClick={async () => {
               if (!confirm('Delete this session permanently?')) return;
-              await fetch(`/api/recordings/${sessionId}`, { method: 'DELETE' });
+              await api.del(`/recordings/${sessionId}`);
               onDeleted();
             }}
           >🗑 Delete</button>

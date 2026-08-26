@@ -1,0 +1,110 @@
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { api } from '../../api/client';
+import StatusBadge from '../shared/StatusBadge';
+
+const SEVERITY_COLOR = { high: 'var(--red)', medium: 'var(--yellow)', unknown: 'var(--text-dim)' };
+
+function timeAgo(ts) {
+  if (!ts) return '—';
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+const STATUS_FILTERS = [
+  { id: '', label: 'All' },
+  { id: 'AWAITING_APPROVAL', label: 'Needs Approval' },
+  { id: 'RESOLVED', label: 'Resolved' },
+  { id: 'FAILED', label: 'Failed' },
+  { id: 'DISMISSED', label: 'Dismissed' }
+];
+
+export default function Incidents() {
+  const [incidents, setIncidents] = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [statusFilter, setStatusFilter] = useState('');
+  const navigate = useNavigate();
+
+  async function load() {
+    try {
+      const qs = statusFilter ? `?status=${statusFilter}` : '';
+      setIncidents(await api.get(`/incidents${qs}`));
+    } catch {
+      setIncidents([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    setLoading(true);
+    load();
+    const p = setInterval(load, 8000);
+    return () => clearInterval(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter]);
+
+  const openCount = incidents.filter(i => !['RESOLVED', 'FAILED', 'DISMISSED'].includes(i.status)).length;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {STATUS_FILTERS.map(f => (
+          <button
+            key={f.id}
+            id={`incident-filter-${f.id || 'all'}`}
+            className={`btn btn-sm ${statusFilter === f.id ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setStatusFilter(f.id)}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="empty-state"><div className="boot-spinner" /></div>
+      ) : incidents.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-state-icon">✅</div>
+          <p>No incidents{statusFilter ? ' match this filter' : ' — everything looks healthy'}</p>
+        </div>
+      ) : (
+        <div className="card">
+          <div className="card-title" style={{ marginBottom: 12 }}>
+            🚨 Incidents ({incidents.length}{openCount > 0 ? `, ${openCount} open` : ''})
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Status</th><th>Severity</th><th>Resource</th><th>Trigger</th><th>Root Cause</th><th>Detected</th>
+                </tr>
+              </thead>
+              <tbody>
+                {incidents.map(inc => (
+                  <tr key={inc.id} id={`incident-row-${inc.id}`} onClick={() => navigate(`/incidents/${inc.id}`)}>
+                    <td><StatusBadge status={inc.status} /></td>
+                    <td>
+                      <span style={{ color: SEVERITY_COLOR[inc.severity] || 'var(--text-dim)', fontWeight: 600, fontSize: '0.78rem', textTransform: 'uppercase' }}>
+                        {inc.severity}
+                      </span>
+                    </td>
+                    <td style={{ fontWeight: 500 }}>{inc.resourceName || `#${inc.resource_id}`}</td>
+                    <td className="mono" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{inc.trigger_rule}</td>
+                    <td style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {inc.root_cause || <span style={{ color: 'var(--text-dim)' }}>—</span>}
+                    </td>
+                    <td className="mono" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{timeAgo(inc.detected_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

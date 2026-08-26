@@ -1,4 +1,5 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
+import { api } from '../../api/client';
 
 // Lazy-load chart library only on Recordings tab
 const SessionReport = lazy(() => import('./SessionReport'));
@@ -29,14 +30,14 @@ export default function Recordings() {
   const [selected, setSelected]   = useState(null); // session ID to view
 
   async function load() {
-    try { const r = await fetch('/api/recordings'); setSessions(await r.json()); }
+    try { setSessions(await api.get('/recordings')); }
     finally { setLoading(false); }
   }
 
   async function deleteSession(id, e) {
     e.stopPropagation();
     if (!confirm('Delete this recording session?')) return;
-    await fetch(`/api/recordings/${id}`, { method: 'DELETE' });
+    await api.del(`/recordings/${id}`);
     if (selected === id) setSelected(null);
     load();
   }

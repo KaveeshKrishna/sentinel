@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { api } from '../../api/client';
 import StatusBadge from './StatusBadge';
 
 function fmt(bytes) {
@@ -18,8 +19,7 @@ export default function ContainerPanel({ container, onClose }) {
     if (!container) return;
     setLoading(true);
     setLogs(null);
-    fetch(`/api/docker/containers/${container.id}/logs?tail=200`)
-      .then(r => r.json())
+    api.get(`/docker/containers/${container.id}/logs?tail=200`)
       .then(lines => { setLogs(lines); setLoading(false); })
       .catch(() => { setLogs([]); setLoading(false); });
   }, [container?.id]);
@@ -27,7 +27,7 @@ export default function ContainerPanel({ container, onClose }) {
   async function doAction(act) {
     setAction(act);
     try {
-      await fetch(`/api/docker/containers/${container.id}/${act}`, { method: 'POST' });
+      await api.post(`/docker/containers/${container.id}/${act}`);
     } finally {
       setAction(null);
     }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { api } from '../../api/client';
 
 function timeAgo(dateStr) {
   if (!dateStr) return '—';
@@ -145,8 +146,7 @@ export default function Deployments() {
 
   async function load() {
     try {
-      const r = await fetch('/api/deployments');
-      setRepos(await r.json());
+      setRepos(await api.get('/deployments'));
     } finally {
       setLoading(false);
     }

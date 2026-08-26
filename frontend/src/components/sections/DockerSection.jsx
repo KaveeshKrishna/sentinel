@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { api } from '../../api/client';
 import StatusBadge from '../shared/StatusBadge';
 import ContainerPanel from '../shared/ContainerPanel';
 
@@ -16,8 +17,7 @@ export default function DockerSection() {
 
   async function load() {
     try {
-      const r = await fetch('/api/docker/containers');
-      setContainers(await r.json());
+      setContainers(await api.get('/docker/containers'));
     } finally {
       setLoading(false);
     }

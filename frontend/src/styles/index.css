@@ -272,6 +272,7 @@ code, .mono { font-family: var(--mono); }
   background: none;
   width: 100%;
   text-align: left;
+  text-decoration: none;
   border-radius: 0;
   transition: color 0.15s, background 0.15s;
   position: relative;

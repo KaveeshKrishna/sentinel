@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { Routes, Route, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import RecordingControl from '../components/recording/RecordingControl';
 import Overview    from '../components/sections/Overview';
 import Hardware    from '../components/sections/Hardware';
@@ -11,24 +10,30 @@ import Services    from '../components/sections/Services';
 import Deployments from '../components/sections/Deployments';
 import Activity    from '../components/sections/Activity';
 import Recordings  from '../components/sections/Recordings';
+import Incidents   from '../components/sections/Incidents';
+import IncidentDetail from '../components/sections/IncidentDetail';
+import Settings    from '../components/sections/Settings';
 import { useAuth, apiLogout } from '../hooks/useAuth';
 import { useMetrics } from '../hooks/useWebSocket';
 
 const TABS = [
-  { id: 'overview',     label: 'Overview',     icon: 'grid' },
-  { id: 'hardware',     label: 'Hardware',      icon: 'cpu' },
-  { id: 'docker',       label: 'Docker',        icon: 'box' },
-  { id: 'websites',     label: 'Websites',      icon: 'globe' },
-  { id: 'network',      label: 'Network',       icon: 'activity' },
-  { id: 'storage',      label: 'Storage',       icon: 'database' },
-  { id: 'services',     label: 'Services',      icon: 'layers' },
-  { id: 'deployments',  label: 'Deployments',   icon: 'git-branch' },
-  { id: 'activity',     label: 'Activity',      icon: 'clock' },
-  { id: 'recordings',   label: 'Recordings',    icon: 'record' }
+  { id: 'overview',     label: 'Overview',     icon: 'grid',        group: 'Monitor' },
+  { id: 'incidents',    label: 'Incidents',    icon: 'alert',       group: 'Monitor' },
+  { id: 'hardware',     label: 'Hardware',      icon: 'cpu',        group: 'Monitor' },
+  { id: 'docker',       label: 'Docker',        icon: 'box',        group: 'Monitor' },
+  { id: 'websites',     label: 'Websites',      icon: 'globe',      group: 'Monitor' },
+  { id: 'network',      label: 'Network',       icon: 'activity',   group: 'Monitor' },
+  { id: 'storage',      label: 'Storage',       icon: 'database',   group: 'Monitor' },
+  { id: 'services',     label: 'Services',      icon: 'layers',     group: 'Manage' },
+  { id: 'deployments',  label: 'Deployments',   icon: 'git-branch', group: 'Manage' },
+  { id: 'activity',     label: 'Activity',      icon: 'clock',      group: 'Manage' },
+  { id: 'recordings',   label: 'Recordings',    icon: 'record',     group: 'Manage' },
+  { id: 'settings',     label: 'Settings',      icon: 'settings',   group: 'Manage' }
 ];
 
 const TAB_TITLES = {
   overview:    { title: 'System Overview',    subtitle: 'Live system health at a glance' },
+  incidents:   { title: 'Incidents',          subtitle: 'AI-detected infrastructure incidents' },
   hardware:    { title: 'Hardware',           subtitle: 'CPU, memory, and disk details' },
   docker:      { title: 'Docker',             subtitle: 'Running and stopped containers' },
   websites:    { title: 'Websites',           subtitle: 'Hosted applications status' },
@@ -37,8 +42,11 @@ const TAB_TITLES = {
   services:    { title: 'Services',           subtitle: 'System service control' },
   deployments: { title: 'Deployments',        subtitle: '/srv/apps git repositories' },
   activity:    { title: 'Activity Timeline',  subtitle: 'Last 500 system events' },
-  recordings:  { title: 'Recordings',         subtitle: 'VPS health recording sessions' }
+  recordings:  { title: 'Recordings',         subtitle: 'VPS health recording sessions' },
+  settings:    { title: 'Settings',           subtitle: 'AI provider configuration' }
 };
+
+const GROUPS = ['Monitor', 'Manage'];
 
 function NavIcon({ name }) {
   const icons = {
@@ -51,8 +59,9 @@ function NavIcon({ name }) {
     layers:<><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></>,
     'git-branch':<><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></>,
     clock:<><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
-    record:<><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor"/>
-    </>
+    record:<><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor"/></>,
+    alert:<><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
+    settings:<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></>
   };
   return (
     <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -62,30 +71,19 @@ function NavIcon({ name }) {
 }
 
 export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState('overview');
   const { setAuth } = useAuth();
   const { connected } = useMetrics() || {};
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const info = TAB_TITLES[activeTab];
+  const activeTab = location.pathname.split('/')[1] || 'overview';
+  const info = TAB_TITLES[activeTab] || TAB_TITLES.overview;
 
   async function handleLogout() {
     await apiLogout();
     setAuth(false);
+    navigate('/login', { replace: true });
   }
-
-  const SECTION_MAP = {
-    overview:    <Overview />,
-    hardware:    <Hardware />,
-    docker:      <DockerSection />,
-    websites:    <Websites />,
-    network:     <Network />,
-    storage:     <Storage />,
-    services:    <Services />,
-    deployments: <Deployments />,
-    activity:    <Activity />,
-    recordings:  <Recordings />
-  };
 
   return (
     <div className="app-shell">
@@ -99,30 +97,21 @@ export default function Dashboard() {
         </div>
 
         <nav className="sidebar-nav">
-          <div className="nav-section-label">Monitor</div>
-          {TABS.slice(0, 6).map(tab => (
-            <button
-              key={tab.id}
-              id={`nav-${tab.id}`}
-              className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              <NavIcon name={tab.icon} />
-              <span>{tab.label}</span>
-            </button>
-          ))}
-
-          <div className="nav-section-label" style={{ marginTop: 8 }}>Manage</div>
-          {TABS.slice(6).map(tab => (
-            <button
-              key={tab.id}
-              id={`nav-${tab.id}`}
-              className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              <NavIcon name={tab.icon} />
-              <span>{tab.label}</span>
-            </button>
+          {GROUPS.map(group => (
+            <div key={group}>
+              <div className="nav-section-label" style={group !== GROUPS[0] ? { marginTop: 8 } : undefined}>{group}</div>
+              {TABS.filter(t => t.group === group).map(tab => (
+                <NavLink
+                  key={tab.id}
+                  id={`nav-${tab.id}`}
+                  to={`/${tab.id}`}
+                  className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+                >
+                  <NavIcon name={tab.icon} />
+                  <span>{tab.label}</span>
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
 
@@ -160,7 +149,23 @@ export default function Dashboard() {
         </div>
 
         <div className="content-scroll">
-          {SECTION_MAP[activeTab]}
+          <Routes>
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="overview" element={<Overview />} />
+            <Route path="incidents" element={<Incidents />} />
+            <Route path="incidents/:id" element={<IncidentDetail />} />
+            <Route path="hardware" element={<Hardware />} />
+            <Route path="docker" element={<DockerSection />} />
+            <Route path="websites" element={<Websites />} />
+            <Route path="network" element={<Network />} />
+            <Route path="storage" element={<Storage />} />
+            <Route path="services" element={<Services />} />
+            <Route path="deployments" element={<Deployments />} />
+            <Route path="activity" element={<Activity />} />
+            <Route path="recordings" element={<Recordings />} />
+            <Route path="settings" element={<Settings />} />
+            <Route path="*" element={<Navigate to="overview" replace />} />
+          </Routes>
         </div>
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { api } from '../../api/client';
 import StatusBadge from '../shared/StatusBadge';
 
 export default function Websites() {
@@ -7,8 +8,7 @@ export default function Websites() {
 
   async function load() {
     try {
-      const r = await fetch('/api/websites');
-      setSites(await r.json());
+      setSites(await api.get('/websites'));
     } catch {
       setSites([]);
     } finally {
