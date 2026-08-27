@@ -23,6 +23,17 @@ const ajv = new Ajv({ allErrors: true, strict: false });
  * away over that. Less capable/free models are meaningfully more prone
  * to exactly these near-misses than to actually-wrong tool names or
  * malformed core fields.
+ *
+ * Only `rootCause` and `recommendedActions` are required. `confidence`,
+ * `evidence`, `affectedComponents` and `requiresApproval` are all
+ * UI-display fields with safe fallbacks in orchestrator.js /
+ * IncidentDetail.jsx — a free-tier model that returns a correct
+ * rootCause + a valid tool call but omits `confidence` (seen live
+ * against an OpenRouter free model, incident #8 during Phase 5) had a
+ * fully actionable diagnosis rejected twice over nothing safety-
+ * relevant. `requiresApproval` in particular was never a gate: every
+ * recommended action needs an explicit human approval regardless of it
+ * (Architecture decision #13).
  */
 const DIAGNOSIS_SCHEMA = {
   type: 'object',
@@ -47,7 +58,7 @@ const DIAGNOSIS_SCHEMA = {
     },
     requiresApproval: { type: 'boolean' }
   },
-  required: ['rootCause', 'confidence', 'evidence', 'affectedComponents', 'recommendedActions', 'requiresApproval'],
+  required: ['rootCause', 'recommendedActions'],
   additionalProperties: true
 };
 

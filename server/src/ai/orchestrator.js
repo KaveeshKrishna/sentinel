@@ -11,7 +11,10 @@ const MAX_ATTEMPTS = 2;
 
 function buildSystemPrompt(toolCatalog) {
   const toolList = toolCatalog
-    .map(t => `- ${t.name} (risk: ${t.risk}): ${t.description}`)
+    .map(t => {
+      const schema = JSON.stringify(t.parameters || { type: 'object', properties: {} });
+      return `- ${t.name} (risk: ${t.risk}): ${t.description}\n    params schema: ${schema}`;
+    })
     .join('\n');
 
   return [
@@ -19,7 +22,11 @@ function buildSystemPrompt(toolCatalog) {
     'You are given evidence collected from a monitored host and must respond with ONLY a JSON object',
     'matching the required schema — no prose, no markdown fences.',
     '',
-    'You may only recommend actions using these EXACT tool names (any other name will be discarded):',
+    'You may only recommend actions using these EXACT tool names (any other name will be discarded).',
+    'Each action\'s "params" object MUST conform exactly to that tool\'s params schema below: use only',
+    'the properties it lists and no others (the schemas are strict — extra properties are rejected).',
+    'Where a schema wants a container "id", pass the container name exactly as it appears in the',
+    'evidence (the agent resolves a name or an id).',
     toolList,
     '',
     'Ground your rootCause and recommendedActions strictly in the evidence provided. Never invent',
@@ -157,10 +164,13 @@ async function runDiagnosis(incident, evidence) {
       ok: true,
       diagnosis: {
         rootCause: parsed.rootCause,
-        confidence: parsed.confidence,
-        evidence: parsed.evidence,
-        affectedComponents: parsed.affectedComponents,
-        requiresApproval: parsed.requiresApproval,
+        // The four below are UI-display fields — not required by the
+        // schema (see ai/schema.js). Fall back safely so a terse
+        // free-model response still renders and still gates on approval.
+        confidence: typeof parsed.confidence === 'number' ? parsed.confidence : null,
+        evidence: Array.isArray(parsed.evidence) ? parsed.evidence : [],
+        affectedComponents: Array.isArray(parsed.affectedComponents) ? parsed.affectedComponents : [],
+        requiresApproval: parsed.requiresApproval !== false,
         actions: reconcileActions(parsed.recommendedActions, toolCatalog)
       }
     };

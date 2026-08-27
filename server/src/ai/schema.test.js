@@ -52,3 +52,17 @@ test('a missing rootCause still fails — the core structural fields are still r
   delete diagnosis.rootCause;
   assert.equal(validate(diagnosis).valid, false);
 });
+
+test('a terse response with only rootCause + a valid tool call passes — confidence/evidence/affectedComponents/requiresApproval are UI-only', () => {
+  // Seen live against an OpenRouter free model (incident #8, Phase 5):
+  // correct rootCause + a schema-valid start_container call, nothing else.
+  const diagnosis = {
+    rootCause: 'demo-db exited, api unhealthy',
+    recommendedActions: [{ tool: 'start_container', params: { id: 'demo-db' } }]
+  };
+  assert.equal(validate(diagnosis).valid, true);
+});
+
+test('a missing recommendedActions still fails', () => {
+  assert.equal(validate({ rootCause: 'x' }).valid, false);
+});
