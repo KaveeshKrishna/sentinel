@@ -373,3 +373,34 @@ test('incident routes 404 for an unknown id', async () => {
     assert.equal(res.status, 404);
   });
 });
+
+test('DELETE /api/incidents/:id removes one incident; DELETE /api/incidents?status=... clears only that state', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const mk = () => store.createIncident({
+      resourceId: upsertResource({ type: 'container', externalId: 'del-http-' + crypto.randomUUID(), name: 'x' }).id,
+      triggerRule: 'container_exit', triggerSummary: 'exited'
+    });
+
+    const one = mk();
+    const delOne = await fetch(`${base}/api/incidents/${one.id}`, { method: 'DELETE', headers: auth });
+    assert.equal(delOne.status, 200);
+    assert.equal((await delOne.json()).deleted, 1);
+    assert.equal(store.getIncident(one.id), null);
+
+    const delMissing = await fetch(`${base}/api/incidents/999999`, { method: 'DELETE', headers: auth });
+    assert.equal(delMissing.status, 404);
+
+    const badStatus = await fetch(`${base}/api/incidents?status=NONSENSE`, { method: 'DELETE', headers: auth });
+    assert.equal(badStatus.status, 400);
+
+    const keep = mk();
+    const drop = mk();
+    store.updateIncidentStatus(drop.id, 'INVESTIGATING');
+    store.updateIncidentStatus(drop.id, 'DISMISSED');
+    const clearDismissed = await fetch(`${base}/api/incidents?status=DISMISSED`, { method: 'DELETE', headers: auth });
+    assert.equal(clearDismissed.status, 200);
+    assert.equal(store.getIncident(drop.id), null);
+    assert.ok(store.getIncident(keep.id));
+  });
+});

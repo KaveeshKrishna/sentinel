@@ -77,6 +77,28 @@ function listIncidents({ status } = {}) {
   return rows.map(deserializeIncident);
 }
 
+/**
+ * Hard-delete one incident and (via ON DELETE CASCADE — foreign_keys is
+ * ON, see db/connection.js) its evidence, actions, tool_executions and
+ * ai_runs. Returns the number of incident rows removed (0 if no such id).
+ */
+function deleteIncident(id) {
+  return getDb().prepare('DELETE FROM incidents WHERE id = ?').run(id).changes;
+}
+
+/**
+ * Bulk hard-delete. With a `status` it removes only incidents in that
+ * state (the UI's filter-aware "Clear" button); without one it removes
+ * every incident. Same cascade as deleteIncident. Returns rows removed.
+ */
+function deleteIncidents({ status } = {}) {
+  const db = getDb();
+  const res = status
+    ? db.prepare('DELETE FROM incidents WHERE status = ?').run(status)
+    : db.prepare('DELETE FROM incidents').run();
+  return res.changes;
+}
+
 /** Throws IllegalTransitionError rather than silently applying a bad transition. */
 function updateIncidentStatus(id, newStatus, extra = {}) {
   const current = getIncident(id);
@@ -160,6 +182,7 @@ function updateActionStatus(id, status, extra = {}) {
 module.exports = {
   IllegalTransitionError,
   findOpenIncidentForResource, findStuckInvestigations, getLastResolvedAt, createIncident, getIncident, listIncidents,
+  deleteIncident, deleteIncidents,
   updateIncidentStatus, recordDiagnosis, recordInvestigationFailure, recordResolution,
   addEvidence, getEvidence,
   addAction, getAction, getActions, updateActionStatus

@@ -152,6 +152,29 @@ test('approve where the tool call itself throws goes straight to FAILED without 
   assert.equal(store.getAction(action.id).status, 'failed');
 });
 
+test('approve where the agent rejects the params before execution (400) reverts to AWAITING_APPROVAL, not FAILED', async () => {
+  const { AgentError } = require('../agent/client');
+  let verifyCalled = false;
+  _setClientForTesting(fakeAgent({
+    callTool: async () => { throw new AgentError('Invalid parameters', 400, { details: ['/id must be string'] }); },
+    verifyTool: async () => { verifyCalled = true; return { ok: true }; }
+  }));
+
+  const incident = makeOpenIncident();
+  store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+  store.recordDiagnosis(incident.id, { rootCause: 'x', confidence: 0.9 });
+  const action = store.addAction(incident.id, { tool: 'restart_container', params: { id: 42 }, claimedRisk: 'LOW', realRisk: 'MEDIUM_RISK', rationale: 'x' });
+  store.updateIncidentStatus(incident.id, 'AWAITING_APPROVAL');
+
+  const result = await engine.approve(incident.id, { actionId: action.id });
+  assert.equal(result.status, 'AWAITING_APPROVAL');
+  assert.equal(result.resolved_at, null);
+  assert.equal(verifyCalled, false);
+  const rejected = store.getAction(action.id);
+  assert.equal(rejected.status, 'rejected');
+  assert.match(rejected.error, /Invalid parameters/);
+});
+
 test('approve where the action executes but verification never converges -> FAILED, not RESOLVED', async () => {
   _setClientForTesting(fakeAgent({
     callTool: async () => ({ status: 'restarted' }),

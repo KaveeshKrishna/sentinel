@@ -35,6 +35,7 @@ export default function IncidentDetail() {
   const [error, setError]       = useState(null);
   const [busyActionId, setBusyActionId] = useState(null);
   const [dismissing, setDismissing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -74,6 +75,18 @@ export default function IncidentDetail() {
     }
   }
 
+  async function remove() {
+    if (!confirm(`Delete incident #${id}? This permanently removes it and its evidence, actions and AI runs.`)) return;
+    setDeleting(true);
+    try {
+      await api.del(`/incidents/${id}`);
+      navigate('/incidents');
+    } catch (err) {
+      alert(err.message);
+      setDeleting(false);
+    }
+  }
+
   if (loading) return <div className="empty-state"><div className="boot-spinner" /></div>;
   if (error || !incident) return (
     <div className="empty-state">
@@ -91,11 +104,16 @@ export default function IncidentDetail() {
         <button id="btn-back-incidents" className="btn btn-secondary btn-sm" onClick={() => navigate('/incidents')}>← Back</button>
         <div style={{ fontSize: '1rem', fontWeight: 600 }}>Incident #{incident.id}</div>
         <StatusBadge status={incident.status} />
-        {!isTerminal && (
-          <button id="btn-dismiss-incident" className="btn btn-danger btn-sm" style={{ marginLeft: 'auto' }} onClick={dismiss} disabled={dismissing}>
-            {dismissing ? '…' : '✕ Dismiss'}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          {!isTerminal && (
+            <button id="btn-dismiss-incident" className="btn btn-danger btn-sm" onClick={dismiss} disabled={dismissing}>
+              {dismissing ? '…' : '✕ Dismiss'}
+            </button>
+          )}
+          <button id="btn-delete-incident" className="btn btn-secondary btn-sm" onClick={remove} disabled={deleting}>
+            {deleting ? '…' : '🗑 Delete'}
           </button>
-        )}
+        </div>
       </div>
 
       <div className="card">
@@ -117,7 +135,7 @@ export default function IncidentDetail() {
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 4 }}>Root Cause</div>
             <div style={{ fontSize: '0.95rem' }}>{diagnosis.rootCause}</div>
           </div>
-          <div className="info-row"><span className="info-key">Confidence</span><span className="info-val">{Math.round((diagnosis.confidence ?? 0) * 100)}%</span></div>
+          <div className="info-row"><span className="info-key">Confidence</span><span className="info-val">{typeof diagnosis.confidence === 'number' ? `${Math.round(diagnosis.confidence * 100)}%` : '—'}</span></div>
           {diagnosis.affectedComponents?.length > 0 && (
             <div className="info-row"><span className="info-key">Affected</span><span className="info-val">{diagnosis.affectedComponents.join(', ')}</span></div>
           )}

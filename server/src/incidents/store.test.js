@@ -98,3 +98,32 @@ test('recordInvestigationFailure preserves raw text without illegally changing s
   assert.equal(updated.status, 'INVESTIGATING');
   assert.equal(updated.diagnosis_raw_text, 'not valid json');
 });
+
+test('deleteIncident removes the incident and cascades to its evidence and actions', () => {
+  const resource = makeResource();
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'x', triggerSummary: 'x' });
+  store.addEvidence(incident.id, [{ sourceTool: 't', summary: 's', data: null }]);
+  store.addAction(incident.id, { tool: 'restart_container', params: {}, claimedRisk: 'LOW', realRisk: 'MEDIUM_RISK', rationale: 'x' });
+
+  assert.equal(store.deleteIncident(incident.id), 1);
+  assert.equal(store.getIncident(incident.id), null);
+  assert.equal(store.getEvidence(incident.id).length, 0);
+  assert.equal(store.getActions(incident.id).length, 0);
+  assert.equal(store.deleteIncident(incident.id), 0); // already gone
+});
+
+test('deleteIncidents({status}) only clears that state; without a status clears everything', () => {
+  const a = store.createIncident({ resourceId: makeResource().id, triggerRule: 'x', triggerSummary: 'x' });
+  const b = store.createIncident({ resourceId: makeResource().id, triggerRule: 'x', triggerSummary: 'x' });
+  store.updateIncidentStatus(a.id, 'INVESTIGATING');
+  store.updateIncidentStatus(a.id, 'DISMISSED');
+
+  const dismissedRemoved = store.deleteIncidents({ status: 'DISMISSED' });
+  assert.ok(dismissedRemoved >= 1);
+  assert.equal(store.getIncident(a.id), null);       // the DISMISSED one is gone
+  assert.ok(store.getIncident(b.id));                // a non-DISMISSED one survives
+
+  const cleared = store.deleteIncidents();
+  assert.ok(cleared >= 1);
+  assert.equal(store.listIncidents().length, 0);
+});

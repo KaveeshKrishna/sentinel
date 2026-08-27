@@ -26,6 +26,7 @@ export default function Incidents() {
   const [incidents, setIncidents] = useState([]);
   const [loading, setLoading]     = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
+  const [clearing, setClearing]   = useState(false);
   const navigate = useNavigate();
 
   async function load() {
@@ -36,6 +37,32 @@ export default function Incidents() {
       setIncidents([]);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function deleteOne(e, id) {
+    e.stopPropagation();
+    if (!confirm(`Delete incident #${id}? This permanently removes it and its evidence, actions and AI runs.`)) return;
+    try {
+      await api.del(`/incidents/${id}`);
+      await load();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function clearAll() {
+    const label = STATUS_FILTERS.find(f => f.id === statusFilter)?.label || 'All';
+    const scope = statusFilter ? `all "${label}" incidents` : 'ALL incidents';
+    if (!confirm(`Clear ${scope}? This permanently deletes ${incidents.length} incident(s) and their evidence, actions and AI runs.`)) return;
+    setClearing(true);
+    try {
+      await api.del(`/incidents${statusFilter ? `?status=${statusFilter}` : ''}`);
+      await load();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setClearing(false);
     }
   }
 
@@ -51,7 +78,7 @@ export default function Incidents() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         {STATUS_FILTERS.map(f => (
           <button
             key={f.id}
@@ -62,6 +89,17 @@ export default function Incidents() {
             {f.label}
           </button>
         ))}
+        {!loading && incidents.length > 0 && (
+          <button
+            id="btn-clear-incidents"
+            className="btn btn-sm btn-danger"
+            style={{ marginLeft: 'auto' }}
+            onClick={clearAll}
+            disabled={clearing}
+          >
+            {clearing ? '…' : `🗑 Clear ${statusFilter ? STATUS_FILTERS.find(f => f.id === statusFilter)?.label : 'all'} (${incidents.length})`}
+          </button>
+        )}
       </div>
 
       {loading ? (
@@ -80,7 +118,7 @@ export default function Incidents() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Status</th><th>Severity</th><th>Resource</th><th>Trigger</th><th>Root Cause</th><th>Detected</th>
+                  <th>Status</th><th>Severity</th><th>Resource</th><th>Trigger</th><th>Root Cause</th><th>Detected</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -98,6 +136,16 @@ export default function Incidents() {
                       {inc.root_cause || <span style={{ color: 'var(--text-dim)' }}>—</span>}
                     </td>
                     <td className="mono" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{timeAgo(inc.detected_at)}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button
+                        id={`btn-delete-incident-${inc.id}`}
+                        className="btn btn-secondary btn-sm"
+                        title="Delete incident"
+                        onClick={e => deleteOne(e, inc.id)}
+                      >
+                        ✕
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

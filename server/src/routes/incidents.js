@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const store = require('../incidents/store');
 const engine = require('../incidents/engine');
+const { STATES } = require('../incidents/states');
 const { getResource } = require('../graph/resources');
 
 // Resource id -> {type, name} is cheap (resources are few, unindexed reads
@@ -43,6 +44,24 @@ router.post('/:id/approve', async (req, res) => {
     if (err.name === 'IllegalTransitionError') return res.status(409).json({ error: err.message });
     res.status(502).json({ error: err.message });
   }
+});
+
+// Bulk delete — filter-aware "Clear" button in the UI. `?status=FAILED`
+// clears only that state; no query string clears every incident. Must be
+// declared before '/:id' so the bare path isn't captured as an id.
+router.delete('/', (req, res) => {
+  const status = req.query.status;
+  if (status !== undefined && !STATES.includes(status)) {
+    return res.status(400).json({ error: `Unknown status "${status}"` });
+  }
+  const deleted = store.deleteIncidents({ status: status || undefined });
+  res.json({ deleted });
+});
+
+router.delete('/:id', (req, res) => {
+  const deleted = store.deleteIncident(Number(req.params.id));
+  if (!deleted) return res.status(404).json({ error: 'Incident not found' });
+  res.json({ deleted });
 });
 
 router.post('/:id/dismiss', (req, res) => {

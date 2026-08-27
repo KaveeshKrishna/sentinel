@@ -55,6 +55,14 @@ async function startInvestigation(incidentId) {
  * itself throwing) short-circuits straight to FAILED and never reaches
  * the verify step; only a tool call that actually ran gets verified —
  * "executed" and "resolved" are never conflated.
+ *
+ * One exception to "throw -> FAILED": a *pre-execution* rejection by the
+ * agent (a 400 "Invalid parameters" or 404 "unknown tool" — the agent
+ * validated the request and never ran the handler) is deterministic and
+ * mutated nothing, so it rolls the incident back to AWAITING_APPROVAL
+ * (marking that action 'rejected') instead of burning it to terminal
+ * FAILED. A human can then approve a different recommended action, or
+ * dismiss.
  */
 async function approve(incidentId, { actionId, userId = null } = {}, verifyOpts = {}) {
   const incident = store.getIncident(incidentId);
@@ -73,6 +81,17 @@ async function approve(incidentId, { actionId, userId = null } = {}, verifyOpts 
       approved: true, requestedBy: 'remediation', incidentActionId: actionId, realRisk: action.real_risk
     });
   } catch (err) {
+    const rejectedBeforeExecution =
+      err.name === 'AgentError' && (err.status === 400 || err.status === 404);
+
+    if (rejectedBeforeExecution) {
+      store.updateActionStatus(actionId, 'rejected', { executed_at: Date.now(), error: err.message });
+      const reverted = store.updateIncidentStatus(incidentId, 'AWAITING_APPROVAL');
+      logEvent('INCIDENT_ACTION_REJECTED',
+        `Incident #${incidentId}: ${action.tool_name} rejected before execution (${err.message}) — back to AWAITING_APPROVAL`);
+      return reverted;
+    }
+
     store.updateActionStatus(actionId, 'failed', { executed_at: Date.now(), error: err.message });
     store.recordResolution(incidentId, 'FAILED');
     logEvent('INCIDENT_FAILED', `Incident #${incidentId}: execution of ${action.tool_name} failed: ${err.message}`);
