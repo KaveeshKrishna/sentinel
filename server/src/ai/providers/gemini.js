@@ -26,7 +26,18 @@ async function chat({ system, messages, responseSchema, apiKey, model, baseUrl, 
     body: JSON.stringify(body)
   });
 
-  const json = await res.json();
+  let json;
+  try {
+    json = await res.json();
+  } catch {
+    // A non-JSON body (most often an HTML login/consent or block page)
+    // means something failed before Gemini's own API layer ever ran —
+    // account/project restrictions surface this way as often as a
+    // normal JSON error does. Surface that plainly instead of letting
+    // the raw JSON.parse SyntaxError ("Unexpected token '<' ...") leak
+    // through, which reads like Sentinel is broken rather than upstream.
+    throw new Error(`Gemini API returned a non-JSON response (HTTP ${res.status}) — likely an account/project access issue rather than a normal API error`);
+  }
   if (!res.ok) throw new Error(`Gemini API error (${res.status}): ${json?.error?.message || JSON.stringify(json)}`);
 
   const text = json.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';

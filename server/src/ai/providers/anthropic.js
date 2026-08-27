@@ -36,7 +36,17 @@ async function chat({ system, messages, responseSchema, apiKey, model, baseUrl, 
     body: JSON.stringify(body)
   });
 
-  const json = await res.json();
+  let json;
+  try {
+    json = await res.json();
+  } catch {
+    // A non-JSON body means something failed before Anthropic's own API
+    // layer ran (a proxy/gateway error page, a dead base URL for a
+    // self-hosted setup, etc). Surface that plainly instead of letting
+    // the raw JSON.parse SyntaxError leak through as if Sentinel itself
+    // were broken.
+    throw new Error(`Anthropic API returned a non-JSON response (HTTP ${res.status})`);
+  }
   if (!res.ok) throw new Error(`Anthropic API error (${res.status}): ${json?.error?.message || JSON.stringify(json)}`);
 
   const toolUse = (json.content || []).find(b => b.type === 'tool_use');

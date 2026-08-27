@@ -79,19 +79,31 @@ async function getCaddyStats(minutes) {
 
 /**
  * Parse a Caddyfile and return an array of {domain, port} site blocks.
- * Known limitation: a site block containing a nested `{ }` (e.g. a `log {
- * }` directive) truncates the body match early and can drop the
- * reverse_proxy line. Tracked for a real Caddyfile-aware parser (P1
- * WebsiteDiscoveryProvider) — see ARCHITECTURE.md known issues.
+ * Walks brace depth to find each site block's real closing `}` instead of
+ * matching up to the first `}` anywhere in the block — a site with a
+ * nested directive (e.g. `log { output file X { roll_size ... } }`, the
+ * standard shape for JSON access logging) would otherwise have its body
+ * truncated mid-nesting, silently dropping its reverse_proxy line and
+ * desyncing which text the next site's match starts from.
  */
 function parseCaddyfile(content) {
   const clean = content.replace(/#[^\n]*/g, '');
   const sites = [];
-  const blockRx = /(?:https?:\/\/)?([a-zA-Z0-9][a-zA-Z0-9\-.*]+\.[a-zA-Z]{2,})\s*\{([^}]*)\}/g;
+  const openRx = /(?:https?:\/\/)?([a-zA-Z0-9][a-zA-Z0-9\-.*]+\.[a-zA-Z]{2,})\s*\{/g;
   let m;
-  while ((m = blockRx.exec(clean)) !== null) {
+  while ((m = openRx.exec(clean)) !== null) {
     const domain = m[1].trim();
-    const body = m[2];
+    const bodyStart = openRx.lastIndex;
+    let depth = 1;
+    let i = bodyStart;
+    while (i < clean.length && depth > 0) {
+      if (clean[i] === '{') depth++;
+      else if (clean[i] === '}') depth--;
+      i++;
+    }
+    const body = clean.slice(bodyStart, i - 1);
+    openRx.lastIndex = i; // resume scanning after this site's real closing brace
+
     const proxyM = body.match(/reverse_proxy\s+([^\s\n]+)/);
     if (!proxyM) continue;
     const target = proxyM[1].trim();
@@ -173,3 +185,5 @@ module.exports = function registerNetworkTools(registry) {
     }
   });
 };
+
+module.exports._parseCaddyfile = parseCaddyfile;

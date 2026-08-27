@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
@@ -86,6 +86,36 @@ function resolveRepoPath(name) {
     throw new Error(`"${safeName}" is not a known git repository under ${APPS_PATH}`);
   }
   return { safeName, repoPath };
+}
+
+/**
+ * The agent runs as root; repos under APPS_PATH are owned by whatever
+ * user actually deploys them (not root). Since Git 2.35.2, a `git`
+ * command refuses to run at all in a repo owned by a different user
+ * than the one invoking it ("detected dubious ownership") unless that
+ * path is explicitly allow-listed — root has no standing exception.
+ * Called once at agent startup so every discovered repo is trusted
+ * before the first git call, and re-run on restart so a newly-cloned
+ * repo picks it up without a separate manual step.
+ */
+function ensureSafeDirectories() {
+  const repos = discoverRepos();
+  if (repos.length === 0) return;
+
+  let alreadyTrusted = new Set();
+  try {
+    const out = execFileSync('git', ['config', '--system', '--get-all', 'safe.directory'], { encoding: 'utf8' });
+    alreadyTrusted = new Set(out.split('\n').filter(Boolean));
+  } catch { /* key not set yet — git exits non-zero, nothing trusted so far */ }
+
+  for (const { path: repoPath } of repos) {
+    if (alreadyTrusted.has(repoPath)) continue;
+    try {
+      execFileSync('git', ['config', '--system', '--add', 'safe.directory', repoPath]);
+    } catch (err) {
+      console.error(`[sentinel-agent] failed to trust ${repoPath} as a git safe.directory:`, err.message);
+    }
+  }
 }
 
 module.exports = function registerGitTools(registry) {
@@ -188,3 +218,5 @@ module.exports = function registerGitTools(registry) {
     }
   });
 };
+
+module.exports.ensureSafeDirectories = ensureSafeDirectories;

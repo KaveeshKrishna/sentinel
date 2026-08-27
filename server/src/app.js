@@ -3,6 +3,7 @@
 const express      = require('express');
 const cookieParser = require('cookie-parser');
 const helmet       = require('helmet');
+const morgan       = require('morgan');
 const path         = require('path');
 const fs           = require('fs');
 
@@ -45,6 +46,12 @@ function createApp() {
       }
     }
   }));
+  // Skipped under NODE_ENV=test so `node --test` output stays readable —
+  // app.test.js exercises most routes and would otherwise interleave a
+  // request log line with every assertion.
+  app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev', {
+    skip: () => process.env.NODE_ENV === 'test'
+  }));
   app.use(cookieParser());
   app.use(express.json({ limit: '1mb' }));
   app.disable('x-powered-by');
@@ -83,6 +90,22 @@ function createApp() {
   } else {
     app.get('/', (_req, res) => res.json({ status: 'backend ok', mode: 'development' }));
   }
+
+  // Final safety net. Every route above already catches its own errors
+  // and returns a curated, safe message (e.g. "API key is invalid") —
+  // those are deliberate and untouched by this. This only catches what
+  // slips past that: a bug, or a library-level error (e.g. express.json()
+  // rejecting a malformed body) that calls next(err) directly. Without
+  // this, Express's own default handler would echo err.message (and, in
+  // non-production, the stack trace) straight to the client.
+  app.use((err, _req, res, next) => {
+    if (res.headersSent) return next(err);
+    console.error('[sentinel] unhandled error:', err);
+    const status = err.status || err.statusCode;
+    const isClientError = status >= 400 && status < 500;
+    res.status(isClientError ? status : 500)
+      .json({ error: isClientError ? 'Bad request' : 'Internal server error' });
+  });
 
   return app;
 }

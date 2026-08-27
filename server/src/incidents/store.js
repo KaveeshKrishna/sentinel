@@ -29,6 +29,25 @@ function getLastResolvedAt(resourceId) {
   return row ? row.resolved_at : null;
 }
 
+/**
+ * Incidents that hit INVESTIGATING (evidence gathered, diagnosis
+ * attempted) but never got a diagnosis — most commonly because no AI
+ * provider was configured yet at the time. `updated_at <= cutoff` is a
+ * cheap first-pass floor (the caller's minimum possible retry interval)
+ * so this doesn't even query candidates worth reconsidering on every
+ * single poll tick; the detector applies its own per-incident
+ * exponential backoff on top of this for incidents that keep failing
+ * (see detector.js's checkStuckInvestigations).
+ */
+function findStuckInvestigations(olderThanMs) {
+  const cutoff = Date.now() - olderThanMs;
+  const rows = getDb().prepare(`
+    SELECT * FROM incidents
+    WHERE status = 'INVESTIGATING' AND diagnosis_json IS NULL AND updated_at <= ?
+  `).all(cutoff);
+  return rows.map(deserializeIncident);
+}
+
 /** Backed by the partial unique index on incidents(resource_id) WHERE status NOT IN (terminal). */
 function findOpenIncidentForResource(resourceId) {
   const row = getDb().prepare(`
@@ -140,7 +159,7 @@ function updateActionStatus(id, status, extra = {}) {
 
 module.exports = {
   IllegalTransitionError,
-  findOpenIncidentForResource, getLastResolvedAt, createIncident, getIncident, listIncidents,
+  findOpenIncidentForResource, findStuckInvestigations, getLastResolvedAt, createIncident, getIncident, listIncidents,
   updateIncidentStatus, recordDiagnosis, recordInvestigationFailure, recordResolution,
   addEvidence, getEvidence,
   addAction, getAction, getActions, updateActionStatus

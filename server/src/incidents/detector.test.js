@@ -7,14 +7,17 @@ const crypto = require('crypto');
 
 const DB_PATH = path.join(os.tmpdir(), `sentinel-test-detector-${crypto.randomUUID()}.db`);
 process.env.DB_PATH = DB_PATH;
+process.env.SENTINEL_SECRET_KEY = crypto.randomBytes(32).toString('hex');
 
 const { test, before, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { migrate } = require('../db/migrate');
 const { getDb } = require('../db/connection');
 const { registerRelationship } = require('../graph/relationships');
-const { getResourceByRef } = require('../graph/resources');
+const { getResourceByRef, upsertResource } = require('../graph/resources');
 const { _setClientForTesting, _resetClientForTesting } = require('../agent/client');
+const { setAIConfig, clearAIConfig } = require('../settings/aiConfig');
+const { _setProviderForTesting, _resetProviderForTesting } = require('../ai/provider');
 const store = require('./store');
 const detector = require('./detector');
 
@@ -36,6 +39,8 @@ before(() => migrate());
 beforeEach(() => detector._resetForTesting());
 after(async () => {
   _resetClientForTesting();
+  _resetProviderForTesting();
+  clearAIConfig();
   await new Promise(r => setTimeout(r, 50)); // let any fire-and-forget investigations settle
   for (const suffix of ['', '-wal', '-shm']) {
     try { fs.rmSync(DB_PATH + suffix); } catch { /* already gone */ }
@@ -182,4 +187,89 @@ test('a cooldown blocks a new incident right after resolution, but allows one on
   await detector.checkServices(agent);
   const countAfterCooldown = getDb().prepare('SELECT COUNT(*) c FROM incidents WHERE resource_id = ?').get(resource.id).c;
   assert.equal(countAfterCooldown, 2);
+});
+
+/** An incident already at INVESTIGATING with no diagnosis yet — the "detected before an AI provider was configured" state. */
+function makeStuckIncident(ageMs) {
+  const resource = upsertResource({ type: 'container', externalId: 'stuck-' + crypto.randomUUID(), name: 'stuck' });
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_unhealthy', triggerSummary: 'stuck' });
+  store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+  getDb().prepare('UPDATE incidents SET updated_at = ? WHERE id = ?').run(Date.now() - ageMs, incident.id);
+  return incident;
+}
+
+test('checkStuckInvestigations is a no-op when no AI provider is configured', async () => {
+  clearAIConfig();
+  _setClientForTesting(flatAgent());
+  const incident = makeStuckIncident(60000);
+  await detector.checkStuckInvestigations();
+  assert.equal(store.getIncident(incident.id).status, 'INVESTIGATING');
+  assert.equal(store.getIncident(incident.id).diagnosis, null);
+});
+
+test('checkStuckInvestigations re-drives diagnosis once a provider is configured and the incident is old enough', async () => {
+  setAIConfig({ provider: 'openai-compatible', model: 'test-model', baseUrl: '', apiKey: 'test-key' });
+  _setProviderForTesting({
+    chat: async () => ({
+      text: JSON.stringify({
+        rootCause: 'now diagnosed', confidence: 0.8, evidence: [], affectedComponents: [],
+        requiresApproval: false, recommendedActions: []
+      }),
+      toolCalls: [], usage: {}
+    })
+  });
+  _setClientForTesting(flatAgent());
+
+  const incident = makeStuckIncident(60000);
+  await detector.checkStuckInvestigations();
+  await new Promise(r => setTimeout(r, 50)); // re-investigation is fire-and-forget, like raiseIncident's
+
+  const updated = store.getIncident(incident.id);
+  assert.equal(updated.status, 'DIAGNOSED');
+  assert.equal(updated.root_cause, 'now diagnosed');
+});
+
+test('checkStuckInvestigations leaves a recently-updated stuck incident alone (cooldown)', async () => {
+  setAIConfig({ provider: 'openai-compatible', model: 'test-model', baseUrl: '', apiKey: 'test-key' });
+  _setProviderForTesting({
+    chat: async () => { throw new Error('should not be called within the cooldown window'); }
+  });
+  _setClientForTesting(flatAgent());
+
+  const incident = makeStuckIncident(1000); // well under STUCK_RETRY_BASE_MS
+  await detector.checkStuckInvestigations();
+
+  assert.equal(store.getIncident(incident.id).status, 'INVESTIGATING');
+  assert.equal(store.getIncident(incident.id).diagnosis, null);
+});
+
+test('checkStuckInvestigations backs off exponentially for an incident with repeated failed attempts, instead of retrying at a fixed interval forever', async () => {
+  setAIConfig({ provider: 'openai-compatible', model: 'test-model', baseUrl: '', apiKey: 'test-key' });
+  let chatCalls = 0;
+  _setProviderForTesting({
+    chat: async () => { chatCalls++; throw new Error('provider still down'); }
+  });
+  _setClientForTesting(flatAgent());
+
+  const incident = makeStuckIncident(60000);
+  // Simulate 3 prior failed diagnosis attempts — each a real ai_runs row,
+  // as runDiagnosis itself writes on every failure path (see orchestrator.js).
+  for (let i = 0; i < 3; i++) {
+    getDb().prepare(`
+      INSERT INTO ai_runs (incident_id, purpose, provider, model, attempt, error, created_at)
+      VALUES (?, 'diagnosis', 'openai-compatible', 'test-model', 1, 'provider still down', ?)
+    `).run(incident.id, Date.now());
+  }
+
+  // 3 attempts -> backoff = 30000 * 2^3 = 240000ms. 60s old is well within
+  // that window, so this should NOT retry despite clearing the base filter.
+  await detector.checkStuckInvestigations();
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(chatCalls, 0);
+
+  // Backdate past the computed backoff and it should retry.
+  getDb().prepare('UPDATE incidents SET updated_at = ? WHERE id = ?').run(Date.now() - 250000, incident.id);
+  await detector.checkStuckInvestigations();
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(chatCalls, 1);
 });

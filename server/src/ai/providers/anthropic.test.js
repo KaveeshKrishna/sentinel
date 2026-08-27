@@ -51,3 +51,19 @@ test('throws with the API error message on a non-2xx response', async () => {
     /invalid x-api-key/
   );
 });
+
+test('throws a clear error, not a raw SyntaxError, when the response body is not JSON', async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 502,
+    json: async () => { throw new SyntaxError("Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON"); }
+  });
+  await assert.rejects(
+    chat({ system: 's', messages: [{ role: 'user', content: 'hi' }], apiKey: 'k', fetchImpl }),
+    (err) => {
+      assert.match(err.message, /non-JSON response \(HTTP 502\)/);
+      assert.doesNotMatch(err.message, /Unexpected token/);
+      return true;
+    }
+  );
+});

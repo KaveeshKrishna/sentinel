@@ -29,7 +29,18 @@ async function chat({ system, messages, responseSchema, apiKey, model, baseUrl, 
     body: JSON.stringify(body)
   });
 
-  const json = await res.json();
+  let json;
+  try {
+    json = await res.json();
+  } catch {
+    // A non-JSON body means something failed before the target server's
+    // own API layer ran — a wrong base URL, a gateway/proxy error page
+    // (common on OpenRouter/Groq under load), a local server that isn't
+    // actually OpenAI-compatible at that path. Surface that plainly
+    // instead of letting the raw JSON.parse SyntaxError leak through as
+    // if Sentinel itself were broken.
+    throw new Error(`OpenAI-compatible API returned a non-JSON response (HTTP ${res.status}) — check the base URL is correct`);
+  }
   if (!res.ok) throw new Error(`OpenAI-compatible API error (${res.status}): ${json?.error?.message || JSON.stringify(json)}`);
 
   const choice = json.choices?.[0];

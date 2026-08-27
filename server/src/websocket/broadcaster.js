@@ -19,11 +19,34 @@ let lastHistory = null;
  * the agent once a second and relays to connected browser clients — it
  * holds no host state of its own.
  */
+// Cross-site WebSocket hijacking defense: a browser always sends Origin
+// on a WS handshake, cross-site or not (unlike plain navigation). The
+// auth cookie is SameSite=Strict already, but that alone depends on
+// correct browser behavior; checking Origin against the Host the
+// request actually arrived on (which reflects the proxy's forwarded
+// value, same as the login route's X-Forwarded-Proto handling) is the
+// standard second layer. Non-browser clients that omit Origin entirely
+// are let through — they can't rely on an auto-attached cookie anyway.
+function isAllowedOrigin(request) {
+  const origin = request.headers.origin;
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === request.headers.host;
+  } catch {
+    return false;
+  }
+}
+
 function initBroadcaster(server) {
   wss = new WebSocket.Server({ noServer: true });
 
   server.on('upgrade', (request, socket, head) => {
     if (request.url !== '/ws') {
+      socket.destroy();
+      return;
+    }
+    if (!isAllowedOrigin(request)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
       socket.destroy();
       return;
     }
@@ -39,12 +62,30 @@ function initBroadcaster(server) {
   });
 
   wss.on('connection', (ws) => {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
     ws.on('error', () => {});
     // Send current snapshot immediately so sparklines populate at once
     if (lastMetrics) {
       ws.send(JSON.stringify({ type: 'init', data: lastMetrics, history: lastHistory }));
     }
   });
+
+  // Detects dead connections (client crashed, network dropped without a
+  // clean close frame) that would otherwise sit in wss.clients forever —
+  // ws's own docs recommend exactly this ping/pong pattern. A client that
+  // doesn't pong before the next tick is presumed dead and terminated.
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (ws.isAlive === false) {
+        ws.terminate();
+        continue;
+      }
+      ws.isAlive = false;
+      ws.ping();
+    }
+  }, 30000);
+  heartbeat.unref();
 
   const agent = getAgentClient();
 
@@ -84,4 +125,4 @@ function broadcast(type, data) {
   }
 }
 
-module.exports = { initBroadcaster, broadcast };
+module.exports = { initBroadcaster, broadcast, isAllowedOrigin };

@@ -169,4 +169,19 @@ async function runDiagnosis(incident, evidence) {
   return { ok: false, rawText: lastRawText, error: 'AI response failed validation after retry' };
 }
 
-module.exports = { runDiagnosis, reconcileActions, buildSystemPrompt, buildUserMessage };
+/**
+ * How many diagnosis attempts (each one a distinct ai_runs row — every
+ * failure path in runDiagnosis records one, incl. a provider-level
+ * error) have already been made for this incident. Used by the
+ * detector's stuck-investigation re-drive (detector.js) to back off
+ * exponentially instead of retrying a persistently-failing provider
+ * (bad key, exhausted quota) at a fixed short interval forever.
+ */
+function countDiagnosisAttempts(incidentId) {
+  const row = getDb().prepare(
+    `SELECT COUNT(*) c FROM ai_runs WHERE incident_id = ? AND purpose = 'diagnosis'`
+  ).get(incidentId);
+  return row.c;
+}
+
+module.exports = { runDiagnosis, reconcileActions, buildSystemPrompt, buildUserMessage, countDiagnosisAttempts };

@@ -21,6 +21,7 @@ export default function Storage() {
   const m   = ctx?.metrics;
   const du  = m?.disk?.usage;
   const io  = m?.disk?.io;
+  const otherDisks = (m?.disk?.allDisks || []).filter(d => d.name !== io?.name);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -70,18 +71,39 @@ export default function Storage() {
         )}
       </div>
 
-      {/* Additional disks — SMART data appears here once detected */}
-      <div className="card" style={{ opacity: 0.5 }}>
+      {/* Additional disks — presence + I/O only (from /proc/diskstats, no
+          active read/write of our own); full SMART data is a separate,
+          not-yet-built feature (see ARCHITECTURE.md roadmap). */}
+      <div className="card" style={otherDisks.length ? undefined : { opacity: 0.5 }}>
         <div className="card-title">📦 Additional Disks</div>
-        <div style={{ display: 'flex', align: 'center', gap: 12, color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          <span style={{ fontSize: '1.5rem' }}>🔌</span>
-          <div>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>None Detected</div>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>
-              SMART data for additional disks will appear here once connected
+        {otherDisks.length ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {otherDisks.map(d => (
+              <div key={d.name} style={{ display: 'flex', gap: 24, alignItems: 'center', fontSize: '0.82rem' }}>
+                <div style={{ fontFamily: 'var(--mono)', fontWeight: 600 }}>{d.name}</div>
+                <div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem', marginBottom: 2 }}>READ SPEED</div>
+                  <div style={{ fontFamily: 'var(--mono)' }}>{fmt(d.readSpeed)}/s</div>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem', marginBottom: 2 }}>WRITE SPEED</div>
+                  <div style={{ fontFamily: 'var(--mono)' }}>{fmt(d.writeSpeed)}/s</div>
+                </div>
+                <div style={{ marginLeft: 'auto', fontSize: '0.72rem', color: 'var(--text-dim)' }}>SMART data not yet supported</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', align: 'center', gap: 12, color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+            <span style={{ fontSize: '1.5rem' }}>🔌</span>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>None Detected</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+                Additional disks will appear here once connected
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
     </div>

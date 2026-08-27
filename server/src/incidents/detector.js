@@ -6,9 +6,13 @@ const { getDependents } = require('../graph/relationships');
 const store = require('./store');
 const { startInvestigation } = require('./engine');
 const { logEvent } = require('../activity/logger');
+const { getAIConfig } = require('../settings/aiConfig');
+const { countDiagnosisAttempts } = require('../ai/orchestrator');
 
 const POLL_MS = 5000; // matches activity/monitor.js's existing docker-event poll cadence
 const COOLDOWN_MS = 60000; // after a resource's incident resolves, wait this long before raising another
+const STUCK_RETRY_BASE_MS = 30000; // minimum time before the first re-investigation attempt
+const STUCK_RETRY_MAX_MS = 30 * 60000; // backoff cap — a persistently-failing provider (bad key, exhausted quota) is still retried eventually, just not hammered
 const UNHEALTHY_STREAK_THRESHOLD = 2; // consecutive polls a container must report `unhealthy`
 const RESOURCE_STREAK_THRESHOLD = 3; // consecutive polls CPU/RAM must stay over threshold
 const CPU_THRESHOLD_PERCENT = 90;
@@ -133,6 +137,39 @@ async function checkSystemMetrics(agent) {
   }
 }
 
+/**
+ * Re-drives diagnosis for an incident that got stuck at INVESTIGATING
+ * with no diagnosis yet — the exact gap `states.js`'s comment on the
+ * INVESTIGATING self-loop describes ("so the detector's next tick can
+ * eventually re-drive it") but that, until now, nothing actually did:
+ * raiseIncident's own dedup check means an already-open incident is
+ * never re-investigated by anything else. Gated on getAIConfig() first
+ * so this is a no-op (no evidence-gathering, no tool calls) on every
+ * tick until a provider is actually configured.
+ *
+ * Once configured, retries back off exponentially per incident
+ * (STUCK_RETRY_BASE_MS * 2^attempts, capped at STUCK_RETRY_MAX_MS)
+ * rather than at a fixed short interval — a flat 30s retry against a
+ * provider that's actually broken (not "not configured yet", but a
+ * real bad key, exhausted quota, or access-denied project) doesn't
+ * recover any faster for it and just burns through what's left of that
+ * quota. `attempts` comes from ai_runs (every diagnosis attempt,
+ * success or failure, is recorded there — see orchestrator.js), so
+ * this naturally slows down and eventually gives up hammering a
+ * provider that's failing for real, while still recovering promptly
+ * from the one-time "wasn't configured yet" gap this was built for.
+ */
+async function checkStuckInvestigations() {
+  if (!getAIConfig().configured) return;
+  const stuck = store.findStuckInvestigations(STUCK_RETRY_BASE_MS);
+  for (const incident of stuck) {
+    const attempts = countDiagnosisAttempts(incident.id);
+    const backoff = Math.min(STUCK_RETRY_MAX_MS, STUCK_RETRY_BASE_MS * 2 ** attempts);
+    if (Date.now() - incident.updated_at < backoff) continue;
+    startInvestigation(incident.id).catch(err => console.error('[detector] re-investigation error:', err.message));
+  }
+}
+
 async function tick() {
   const agent = getAgentClient();
   const checks = [checkContainerEvents, checkContainerHealth, checkServices, checkSystemMetrics];
@@ -142,6 +179,11 @@ async function tick() {
     } catch (err) {
       console.error(`[detector] ${check.name} failed:`, err.message);
     }
+  }
+  try {
+    await checkStuckInvestigations();
+  } catch (err) {
+    console.error('[detector] checkStuckInvestigations failed:', err.message);
   }
 }
 
@@ -165,6 +207,6 @@ function _resetForTesting() {
 
 module.exports = {
   startIncidentDetection, stopIncidentDetection, tick,
-  checkContainerEvents, checkContainerHealth, checkServices, checkSystemMetrics,
+  checkContainerEvents, checkContainerHealth, checkServices, checkSystemMetrics, checkStuckInvestigations,
   _resetForTesting
 };

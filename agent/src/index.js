@@ -7,6 +7,7 @@ const { authMiddleware } = require('./auth');
 const { ToolRegistry } = require('./registry');
 const { isAuthorized } = require('./policy');
 const registerAllTools = require('./tools');
+const { ensureSafeDirectories } = require('./tools/git');
 
 const SOCKET_PATH = process.env.SENTINEL_AGENT_SOCKET || '/run/sentinel/agent.sock';
 
@@ -91,6 +92,15 @@ function buildRegistry() {
 }
 
 function start() {
+  // Runs before the registry ever handles a real git call — see the
+  // function's own comment for why this is needed at all (root running
+  // git against non-root-owned repos).
+  try {
+    ensureSafeDirectories();
+  } catch (err) {
+    console.error('[sentinel-agent] ensureSafeDirectories failed:', err.message);
+  }
+
   const registry = buildRegistry();
   const app = createApp(registry);
 
