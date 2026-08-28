@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../api/client';
 import DetectorSettings from './DetectorSettings';
+import AutoRemediateSettings from './AutoRemediateSettings';
 
 const PROVIDERS = [
   { id: 'anthropic', label: 'Anthropic', modelHint: 'e.g. claude-sonnet-5', needsBaseUrl: false },
@@ -174,6 +175,7 @@ export default function Settings() {
       </div>
 
       <DetectorSettings />
+      <AutoRemediateSettings />
     </div>
   );
 }

@@ -4,6 +4,10 @@ const express = require('express');
 const router = express.Router();
 const { getAIConfig, setAIConfig, clearAIConfig, getDecryptedAPIKey, PROVIDERS } = require('../settings/aiConfig');
 const { getDetectorConfig, setDetectorConfig, resetDetectorConfig, DEFAULTS, LIMITS } = require('../settings/detectorConfig');
+const {
+  getAutoRemediateList, setAutoRemediateList,
+  AUTO_REMEDIABLE_TOOLS, MAX_AUTO_RISK, MAX_AUTO_PER_WINDOW
+} = require('../settings/autoRemediate');
 const { getProvider } = require('../ai/provider');
 
 // Detector tuning — cooldown, sustain windows, CPU/RAM/disk thresholds.
@@ -23,6 +27,33 @@ router.put('/detector', (req, res) => {
 
 router.delete('/detector', (_req, res) => {
   res.json({ config: resetDetectorConfig(), defaults: DEFAULTS, limits: LIMITS });
+});
+
+// Auto-remediation opt-in list. The tool allowlist and risk ceiling are
+// returned read-only for the UI to display — they are code-level
+// constants and deliberately not settable over the API, since this is
+// the one path that runs an action without a human clicking approve.
+router.get('/auto-remediate', (_req, res) => {
+  res.json({
+    resources: getAutoRemediateList(),
+    allowedTools: AUTO_REMEDIABLE_TOOLS,
+    maxRisk: MAX_AUTO_RISK,
+    maxPerHour: MAX_AUTO_PER_WINDOW
+  });
+});
+
+router.put('/auto-remediate', (req, res) => {
+  const { resources } = req.body || {};
+  try {
+    res.json({
+      resources: setAutoRemediateList(resources || []),
+      allowedTools: AUTO_REMEDIABLE_TOOLS,
+      maxRisk: MAX_AUTO_RISK,
+      maxPerHour: MAX_AUTO_PER_WINDOW
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 router.get('/ai', (_req, res) => {

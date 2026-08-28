@@ -24,7 +24,8 @@ const FAKE_CATALOG = [
   { name: 'restart_container', description: 'restart', risk: 'MEDIUM_RISK', parameters: {} },
   { name: 'get_container_status', description: 'status', risk: 'READ_ONLY', parameters: {} },
   { name: 'get_container_logs', description: 'logs', risk: 'READ_ONLY', parameters: {} },
-  { name: 'inspect_git_status', description: 'git', risk: 'READ_ONLY', parameters: {} }
+  { name: 'inspect_git_status', description: 'git', risk: 'READ_ONLY', parameters: {} },
+  { name: 'stop_container', description: 'stop', risk: 'MEDIUM_RISK', parameters: {} }
 ];
 
 before(() => migrate());
@@ -287,4 +288,79 @@ test('rediagnose supersedes stale proposals and re-diagnoses against the accumul
   const proposals = store.getActions(incident.id).filter(a => a.status === 'proposed');
   assert.equal(proposals.length, 1);
   assert.equal(proposals[0].tool_name, 'restart_container');
+});
+
+test('a diagnosis for an opted-in resource auto-remediates without a human, and verifies', async () => {
+  const { setAutoRemediateList } = require('../settings/autoRemediate');
+  let called = null;
+  _setClientForTesting(fakeAgent({
+    callTool: async (name) => { called = name; return { status: 'restarted' }; },
+    verifyTool: async () => ({ ok: true })
+  }));
+  _setProviderForTesting({
+    chat: async () => ({
+      text: JSON.stringify({
+        rootCause: 'caddy is down',
+        recommendedActions: [{ tool: 'restart_container', params: { id: 'demo-db' } }]
+      }), usage: {}
+    })
+  });
+
+  const resource = upsertResource({ type: 'container', externalId: 'auto-' + crypto.randomUUID(), name: 'demo-db' });
+  setAutoRemediateList([`container:${resource.external_id}`]);
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+
+  const result = await engine.startInvestigation(incident.id);
+
+  assert.equal(called, 'restart_container');
+  assert.equal(result.status, 'RESOLVED');
+  const action = store.getActions(incident.id)[0];
+  assert.equal(action.status, 'executed');
+  assert.equal(action.approved_by, null, 'machine-approved actions must be distinguishable in the audit trail');
+  setAutoRemediateList([]);
+});
+
+test('a diagnosis for a resource that is NOT opted in still waits for a human', async () => {
+  // startInvestigation legitimately makes READ_ONLY evidence-gathering
+  // calls first, so assert on the mutating tool specifically.
+  const calls = [];
+  _setClientForTesting(fakeAgent({ callTool: async (name) => { calls.push(name); return {}; } }));
+  _setProviderForTesting({
+    chat: async () => ({
+      text: JSON.stringify({
+        rootCause: 'x',
+        recommendedActions: [{ tool: 'restart_container', params: { id: 'demo-db' } }]
+      }), usage: {}
+    })
+  });
+
+  const incident = makeOpenIncident();
+  const result = await engine.startInvestigation(incident.id);
+
+  assert.equal(result.status, 'AWAITING_APPROVAL');
+  assert.equal(calls.includes('restart_container'), false, 'the remediation must not have executed');
+});
+
+test('auto-remediation never fires for a non-restorative tool, even on an opted-in resource', async () => {
+  const { setAutoRemediateList } = require('../settings/autoRemediate');
+  const calls = [];
+  _setClientForTesting(fakeAgent({ callTool: async (name) => { calls.push(name); return {}; } }));
+  _setProviderForTesting({
+    chat: async () => ({
+      text: JSON.stringify({
+        rootCause: 'runaway container',
+        recommendedActions: [{ tool: 'stop_container', params: { id: 'demo-db' } }]
+      }), usage: {}
+    })
+  });
+
+  const resource = upsertResource({ type: 'container', externalId: 'auto2-' + crypto.randomUUID(), name: 'demo-db' });
+  setAutoRemediateList([`container:${resource.external_id}`]);
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+
+  const result = await engine.startInvestigation(incident.id);
+
+  assert.equal(calls.includes('stop_container'), false, 'a stop is not a repair — must never auto-run');
+  assert.equal(result.status, 'AWAITING_APPROVAL');
+  setAutoRemediateList([]);
 });

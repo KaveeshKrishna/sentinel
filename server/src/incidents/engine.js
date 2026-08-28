@@ -9,6 +9,7 @@ const { verifyAction } = require('../verify/engine');
 const { logEvent } = require('../activity/logger');
 const { getResource } = require('../graph/resources');
 const { redact } = require('../ai/redact');
+const { evaluateAutoRemediation } = require('../settings/autoRemediate');
 
 /** Evidence summary for an approved investigation action's output. */
 const INVESTIGATION_SUMMARY_LIMIT = 4000;
@@ -48,15 +49,46 @@ async function diagnoseWithEvidence(incidentId, evidenceRows) {
   store.recordDiagnosis(incidentId, diagnosisResult.diagnosis);
   logEvent('INCIDENT_DIAGNOSED', `Incident #${incidentId} diagnosed: ${diagnosisResult.diagnosis.rootCause}`);
 
-  for (const action of diagnosisResult.diagnosis.actions) {
-    store.addAction(incidentId, action);
+  const added = diagnosisResult.diagnosis.actions.map(action => store.addAction(incidentId, action));
+
+  if (added.length === 0) return store.getIncident(incidentId); // stays DIAGNOSED
+
+  store.updateIncidentStatus(incidentId, 'AWAITING_APPROVAL');
+
+  return maybeAutoRemediate(incidentId, added);
+}
+
+/**
+ * Opt-in auto-remediation (settings/autoRemediate.js). The default is
+ * still "a human clicks approve" for everything — this only fires for a
+ * resource explicitly opted in, and only for a restorative tool inside
+ * the code-level allowlist and under its rate limit.
+ *
+ * Only the *first* eligible action is auto-run, never a whole plan: one
+ * remediation then verification is the loop this engine is built around,
+ * and running several unattended actions before checking whether the
+ * first one worked is how automation turns a small outage into a large
+ * one. If it doesn't converge, the incident ends FAILED and a human
+ * picks it up — exactly as with a manually approved action.
+ */
+async function maybeAutoRemediate(incidentId, actions) {
+  const incident = store.getIncident(incidentId);
+  const resource = getResource(incident.resource_id);
+
+  for (const action of actions) {
+    const { allowed, reason } = evaluateAutoRemediation({
+      resource, toolName: action.tool_name, realRisk: action.real_risk
+    });
+    if (!allowed) continue;
+
+    logEvent('INCIDENT_AUTO_REMEDIATE',
+      `Incident #${incidentId}: auto-approving ${action.tool_name} — ${reason}`);
+    // userId stays null: that's what marks the row as machine-approved,
+    // both in the audit trail and for the rate-limit query.
+    return runRemediationAction(incidentId, action, null, {});
   }
 
-  if (diagnosisResult.diagnosis.actions.length > 0) {
-    store.updateIncidentStatus(incidentId, 'AWAITING_APPROVAL');
-  }
-
-  return store.getIncident(incidentId);
+  return incident;
 }
 
 /** DETECTED -> INVESTIGATING: gather evidence, then diagnose against it. */

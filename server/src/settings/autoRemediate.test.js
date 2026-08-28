@@ -1,0 +1,136 @@
+'use strict';
+
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const crypto = require('crypto');
+
+const DB_PATH = path.join(os.tmpdir(), `sentinel-test-autoremediate-${crypto.randomUUID()}.db`);
+process.env.DB_PATH = DB_PATH;
+
+const { test, before, beforeEach, after } = require('node:test');
+const assert = require('node:assert/strict');
+const { migrate } = require('../db/migrate');
+const { getDb } = require('../db/connection');
+const { upsertResource } = require('../graph/resources');
+const store = require('../incidents/store');
+const {
+  MAX_AUTO_PER_WINDOW, setAutoRemediateList, getAutoRemediateList,
+  isToolAutoRemediable, evaluateAutoRemediation
+} = require('./autoRemediate');
+
+before(() => migrate());
+beforeEach(() => setAutoRemediateList([]));
+after(() => {
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { fs.rmSync(DB_PATH + suffix); } catch { /* already gone */ }
+  }
+});
+
+const makeResource = (type, name) =>
+  upsertResource({ type, externalId: name, name });
+
+test('nothing is auto-remediable by default', () => {
+  assert.deepEqual(getAutoRemediateList(), []);
+  const caddy = makeResource('service', 'caddy-' + crypto.randomUUID().slice(0, 6));
+  const { allowed, reason } = evaluateAutoRemediation({
+    resource: caddy, toolName: 'start_service', realRisk: 'MEDIUM_RISK'
+  });
+  assert.equal(allowed, false);
+  assert.match(reason, /not opted in/);
+});
+
+test('an opted-in resource with a restorative tool is allowed', () => {
+  const caddy = makeResource('service', 'caddy-' + crypto.randomUUID().slice(0, 6));
+  setAutoRemediateList([`service:${caddy.external_id}`]);
+  assert.equal(evaluateAutoRemediation({
+    resource: caddy, toolName: 'start_service', realRisk: 'MEDIUM_RISK'
+  }).allowed, true);
+});
+
+test('opting in one resource never enables another', () => {
+  const a = makeResource('service', 'a-' + crypto.randomUUID().slice(0, 6));
+  const b = makeResource('service', 'b-' + crypto.randomUUID().slice(0, 6));
+  setAutoRemediateList([`service:${a.external_id}`]);
+  assert.equal(evaluateAutoRemediation({ resource: b, toolName: 'start_service', realRisk: 'MEDIUM_RISK' }).allowed, false);
+});
+
+test('destructive and non-restorative tools are never auto-remediable, however risk is labelled', () => {
+  // The tool allowlist is the boundary — a stop is not a repair.
+  assert.equal(isToolAutoRemediable('stop_service', 'LOW_RISK'), false);
+  assert.equal(isToolAutoRemediable('stop_container', 'READ_ONLY'), false);
+  assert.equal(isToolAutoRemediable('deploy_repository', 'MEDIUM_RISK'), false);
+  assert.equal(isToolAutoRemediable('prune_images', 'DESTRUCTIVE'), false);
+});
+
+test('a restorative tool above the risk ceiling is still refused', () => {
+  assert.equal(isToolAutoRemediable('restart_service', 'MEDIUM_RISK'), true);
+  assert.equal(isToolAutoRemediable('restart_service', 'HIGH_RISK'), false);
+  assert.equal(isToolAutoRemediable('restart_service', 'DESTRUCTIVE'), false);
+});
+
+test('an opted-in resource asking for a non-allowlisted tool is refused with a reason', () => {
+  const svc = makeResource('service', 'svc-' + crypto.randomUUID().slice(0, 6));
+  setAutoRemediateList([`service:${svc.external_id}`]);
+  const { allowed, reason } = evaluateAutoRemediation({
+    resource: svc, toolName: 'stop_service', realRisk: 'HIGH_RISK'
+  });
+  assert.equal(allowed, false);
+  assert.match(reason, /not an auto-remediable tool/);
+});
+
+test('the rate limit escalates to a human after repeated machine-approved attempts', () => {
+  const svc = makeResource('service', 'flap-' + crypto.randomUUID().slice(0, 6));
+  setAutoRemediateList([`service:${svc.external_id}`]);
+
+  // Simulate a crash-looping service: MAX_AUTO_PER_WINDOW prior
+  // auto-approvals (approved_by IS NULL is what marks them machine-run).
+  for (let i = 0; i < MAX_AUTO_PER_WINDOW; i++) {
+    const incident = store.createIncident({ resourceId: svc.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
+    const action = store.addAction(incident.id, {
+      tool: 'start_service', params: {}, claimedRisk: 'LOW', realRisk: 'MEDIUM_RISK', rationale: 'x'
+    });
+    store.updateActionStatus(action.id, 'executed', { approved_by: null, approved_at: Date.now() });
+    store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+    store.updateIncidentStatus(incident.id, 'DISMISSED');
+  }
+
+  const { allowed, reason } = evaluateAutoRemediation({
+    resource: svc, toolName: 'start_service', realRisk: 'MEDIUM_RISK'
+  });
+  assert.equal(allowed, false);
+  assert.match(reason, /rate limit reached/);
+});
+
+test('a human-approved action does not count against the machine rate limit', () => {
+  const svc = makeResource('service', 'human-' + crypto.randomUUID().slice(0, 6));
+  setAutoRemediateList([`service:${svc.external_id}`]);
+  const userId = getDb().prepare(
+    `INSERT INTO users (username, password_hash, created_at) VALUES (?, 'x', ?)`
+  ).run('u-' + crypto.randomUUID(), Date.now()).lastInsertRowid;
+
+  for (let i = 0; i < MAX_AUTO_PER_WINDOW + 2; i++) {
+    const incident = store.createIncident({ resourceId: svc.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
+    const action = store.addAction(incident.id, {
+      tool: 'start_service', params: {}, claimedRisk: 'LOW', realRisk: 'MEDIUM_RISK', rationale: 'x'
+    });
+    store.updateActionStatus(action.id, 'executed', { approved_by: userId, approved_at: Date.now() });
+    store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+    store.updateIncidentStatus(incident.id, 'DISMISSED');
+  }
+
+  assert.equal(evaluateAutoRemediation({
+    resource: svc, toolName: 'start_service', realRisk: 'MEDIUM_RISK'
+  }).allowed, true);
+});
+
+test('a malformed resource key is rejected rather than stored', () => {
+  assert.throws(() => setAutoRemediateList(['no-colon']), /Invalid resource key/);
+  assert.throws(() => setAutoRemediateList([42]), /Invalid resource key/);
+  assert.throws(() => setAutoRemediateList('service:caddy'), /Expected an array/);
+  assert.deepEqual(getAutoRemediateList(), []);
+});
+
+test('duplicate keys are de-duplicated on save', () => {
+  assert.deepEqual(setAutoRemediateList(['service:caddy', 'service:caddy']), ['service:caddy']);
+});
