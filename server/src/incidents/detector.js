@@ -3,21 +3,23 @@
 const { getAgentClient } = require('../agent/client');
 const { upsertResource } = require('../graph/resources');
 const { getDependents } = require('../graph/relationships');
+const { discoverComposeEdges } = require('../graph/discovery');
 const store = require('./store');
+const { isSuppressed } = require('./suppression');
 const { startInvestigation } = require('./engine');
 const { logEvent } = require('../activity/logger');
 const { getAIConfig } = require('../settings/aiConfig');
+const { getDetectorConfig } = require('../settings/detectorConfig');
 const { countDiagnosisAttempts } = require('../ai/orchestrator');
 
 const POLL_MS = 5000; // matches activity/monitor.js's existing docker-event poll cadence
-const COOLDOWN_MS = 60000; // after a resource's incident resolves, wait this long before raising another
 const STUCK_RETRY_BASE_MS = 30000; // minimum time before the first re-investigation attempt
 const STUCK_RETRY_MAX_MS = 30 * 60000; // backoff cap — a persistently-failing provider (bad key, exhausted quota) is still retried eventually, just not hammered
-const UNHEALTHY_STREAK_THRESHOLD = 2; // consecutive polls a container must report `unhealthy`
-const RESOURCE_STREAK_THRESHOLD = 3; // consecutive polls CPU/RAM must stay over threshold
-const CPU_THRESHOLD_PERCENT = 90;
-const RAM_THRESHOLD_PERCENT = 90;
-const DISK_THRESHOLD_PERCENT = 90;
+
+// Cooldown, streak windows and CPU/RAM/disk thresholds are no longer
+// constants here — they're operator-tunable via Settings and read fresh
+// on each use, so a change applies on the next poll without a restart
+// (settings/detectorConfig.js).
 const HOST_RESOURCE_REF = { type: 'host', externalId: 'localhost', name: 'Host' };
 
 let timer = null;
@@ -26,14 +28,22 @@ const unhealthyStreaks = new Map(); // container name -> consecutive-unhealthy-p
 let cpuStreak = 0;
 let ramStreak = 0;
 
-/** Dedupe (open incident already exists) + cooldown (resolved too recently), then create + investigate. */
+/**
+ * Suppression (Sentinel itself just acted on this) + dedupe (open
+ * incident already exists) + cooldown (resolved too recently), then
+ * create + investigate.
+ */
 async function raiseIncident({ resourceRef, severity, triggerRule, triggerSummary }) {
+  // Checked before the upsert: an event that's purely the echo of an
+  // action Sentinel just took shouldn't even register the resource.
+  if (isSuppressed(resourceRef.type, resourceRef.externalId)) return;
+
   const resource = upsertResource(resourceRef);
 
   if (store.findOpenIncidentForResource(resource.id)) return;
 
   const lastResolvedAt = store.getLastResolvedAt(resource.id);
-  if (lastResolvedAt && Date.now() - lastResolvedAt < COOLDOWN_MS) return;
+  if (lastResolvedAt && Date.now() - lastResolvedAt < getDetectorConfig().cooldownMs) return;
 
   const incident = store.createIncident({ resourceId: resource.id, severity, triggerRule, triggerSummary });
   logEvent('INCIDENT_DETECTED', `Incident #${incident.id}: ${triggerSummary}`);
@@ -73,6 +83,17 @@ async function checkContainerEvents(agent) {
 
 async function checkContainerHealth(agent) {
   const containers = await agent.callTool('list_containers');
+
+  // Derive compose `depends_on` edges from the container labels we just
+  // fetched anyway. This has to run before the health/exit rules use the
+  // graph: whether a clean exit raises an incident depends on the
+  // resource having a registered dependent (graph/discovery.js).
+  try {
+    discoverComposeEdges(containers);
+  } catch (err) {
+    console.error('[detector] compose edge discovery failed:', err.message);
+  }
+
   const seen = new Set();
   for (const c of containers) {
     seen.add(c.name);
@@ -82,7 +103,7 @@ async function checkContainerHealth(agent) {
     }
     const streak = (unhealthyStreaks.get(c.name) || 0) + 1;
     unhealthyStreaks.set(c.name, streak);
-    if (streak === UNHEALTHY_STREAK_THRESHOLD) {
+    if (streak === getDetectorConfig().unhealthyStreak) {
       await raiseIncident({
         resourceRef: { type: 'container', externalId: c.name, name: c.name },
         severity: 'high', triggerRule: 'container_unhealthy',
@@ -113,23 +134,25 @@ async function checkSystemMetrics(agent) {
     agent.callTool('inspect_disk')
   ]);
 
-  cpuStreak = metrics.cpu.usage >= CPU_THRESHOLD_PERCENT ? cpuStreak + 1 : 0;
-  ramStreak = metrics.memory.usedPercent >= RAM_THRESHOLD_PERCENT ? ramStreak + 1 : 0;
+  const { cpuThresholdPercent, ramThresholdPercent, diskThresholdPercent, resourceStreak } = getDetectorConfig();
 
-  if (cpuStreak === RESOURCE_STREAK_THRESHOLD) {
+  cpuStreak = metrics.cpu.usage >= cpuThresholdPercent ? cpuStreak + 1 : 0;
+  ramStreak = metrics.memory.usedPercent >= ramThresholdPercent ? ramStreak + 1 : 0;
+
+  if (cpuStreak === resourceStreak) {
     await raiseIncident({
       resourceRef: HOST_RESOURCE_REF, severity: 'medium', triggerRule: 'sustained_cpu',
-      triggerSummary: `Host CPU has been at or above ${CPU_THRESHOLD_PERCENT}% for ${RESOURCE_STREAK_THRESHOLD} consecutive checks`
+      triggerSummary: `Host CPU has been at or above ${cpuThresholdPercent}% for ${resourceStreak} consecutive checks`
     });
   }
-  if (ramStreak === RESOURCE_STREAK_THRESHOLD) {
+  if (ramStreak === resourceStreak) {
     await raiseIncident({
       resourceRef: HOST_RESOURCE_REF, severity: 'medium', triggerRule: 'sustained_ram',
-      triggerSummary: `Host memory has been at or above ${RAM_THRESHOLD_PERCENT}% for ${RESOURCE_STREAK_THRESHOLD} consecutive checks`
+      triggerSummary: `Host memory has been at or above ${ramThresholdPercent}% for ${resourceStreak} consecutive checks`
     });
   }
   // Disk fills slowly — no sustain window needed, but still deduped/cooled-down like everything else.
-  if (disk.usage?.usedPercent >= DISK_THRESHOLD_PERCENT) {
+  if (disk.usage?.usedPercent >= diskThresholdPercent) {
     await raiseIncident({
       resourceRef: HOST_RESOURCE_REF, severity: 'medium', triggerRule: 'disk_usage',
       triggerSummary: `Host disk usage is at ${disk.usage.usedPercent}%`

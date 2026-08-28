@@ -22,6 +22,17 @@ function getDb() {
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
 
+  // better-sqlite3 creates the file with the process umask (0644 in
+  // practice). The containing directory is already 0750 sentinel:sentinel
+  // so this was never a real exposure, but the file holds session rows
+  // and encrypted provider keys — it should not be world-readable on its
+  // own terms. WAL/SHM are created alongside it and get the same
+  // treatment. Best-effort: a bind-mounted or read-only path can refuse
+  // chmod, and that must not stop the server from booting.
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { fs.chmodSync(DB_PATH + suffix, 0o640); } catch { /* not present yet, or not ours to chmod */ }
+  }
+
   return db;
 }
 

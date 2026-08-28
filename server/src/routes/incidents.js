@@ -64,6 +64,21 @@ router.delete('/:id', (req, res) => {
   res.json({ deleted });
 });
 
+// Re-run diagnosis against all evidence gathered so far — including the
+// output of any approved READ_ONLY investigation action. This is how a
+// "I can't tell from this, show me the logs" diagnosis gets turned into
+// an actionable one without waiting for the detector's stuck-retry.
+router.post('/:id/rediagnose', async (req, res) => {
+  const incidentId = Number(req.params.id);
+  if (!store.getIncident(incidentId)) return res.status(404).json({ error: 'Incident not found' });
+  try {
+    res.json(await engine.rediagnose(incidentId));
+  } catch (err) {
+    if (err.name === 'IllegalTransitionError') return res.status(409).json({ error: err.message });
+    res.status(502).json({ error: err.message });
+  }
+});
+
 router.post('/:id/dismiss', (req, res) => {
   const incidentId = Number(req.params.id);
   if (!store.getIncident(incidentId)) return res.status(404).json({ error: 'Incident not found' });

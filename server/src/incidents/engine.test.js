@@ -199,3 +199,92 @@ test('dismiss moves an incident to DISMISSED from a non-terminal state', () => {
   assert.equal(result.status, 'DISMISSED');
   assert.ok(result.resolved_at);
 });
+
+test('approving a READ_ONLY investigation action runs it, appends evidence, and leaves the incident approvable', async () => {
+  let verifyCalled = false;
+  _setClientForTesting(fakeAgent({
+    callTool: async () => ([{ stream: 'stdout', text: 'connection refused' }]),
+    verifyTool: async () => { verifyCalled = true; return { ok: true }; }
+  }));
+
+  const incident = makeOpenIncident();
+  store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+  store.recordDiagnosis(incident.id, { rootCause: 'cannot tell yet', confidence: 0.2 });
+  const action = store.addAction(incident.id, {
+    tool: 'get_container_logs', params: { id: 'demo-db', tail: 200 },
+    claimedRisk: 'READ_ONLY', realRisk: 'READ_ONLY', rationale: 'need the logs'
+  });
+  store.updateIncidentStatus(incident.id, 'AWAITING_APPROVAL');
+  const evidenceBefore = store.getEvidence(incident.id).length;
+
+  const result = await engine.approve(incident.id, { actionId: action.id });
+
+  // The whole point: a READ_ONLY action must never drive the remediation
+  // path, which would verify a tool that has no verify check and so
+  // always end FAILED.
+  assert.equal(result.status, 'AWAITING_APPROVAL');
+  assert.equal(verifyCalled, false);
+  assert.equal(store.getAction(action.id).status, 'executed');
+
+  const evidence = store.getEvidence(incident.id);
+  assert.equal(evidence.length, evidenceBefore + 1);
+  assert.equal(evidence.at(-1).source_tool, 'get_container_logs');
+  assert.match(evidence.at(-1).summary, /connection refused/);
+});
+
+test('a failing READ_ONLY investigation action marks only the action, never the incident', async () => {
+  _setClientForTesting(fakeAgent({
+    callTool: async () => { throw new Error('docker socket unavailable'); }
+  }));
+
+  const incident = makeOpenIncident();
+  store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+  store.recordDiagnosis(incident.id, { rootCause: 'x', confidence: 0.2 });
+  const action = store.addAction(incident.id, {
+    tool: 'get_container_logs', params: { id: 'demo-db' },
+    claimedRisk: 'READ_ONLY', realRisk: 'READ_ONLY', rationale: 'x'
+  });
+  store.updateIncidentStatus(incident.id, 'AWAITING_APPROVAL');
+
+  const result = await engine.approve(incident.id, { actionId: action.id });
+  assert.equal(result.status, 'AWAITING_APPROVAL');
+  assert.equal(store.getAction(action.id).status, 'failed');
+});
+
+test('rediagnose supersedes stale proposals and re-diagnoses against the accumulated evidence', async () => {
+  let seenEvidenceCount = 0;
+  _setClientForTesting(fakeAgent());
+  _setProviderForTesting({
+    chat: async ({ messages }) => {
+      seenEvidenceCount = (messages[0].content.match(/^- \[/gm) || []).length;
+      return {
+        text: JSON.stringify({
+          rootCause: 'now I can tell: demo-db is down',
+          recommendedActions: [{ tool: 'restart_container', params: { id: 'demo-db' } }]
+        }),
+        usage: {}
+      };
+    }
+  });
+
+  const incident = makeOpenIncident();
+  store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+  store.recordDiagnosis(incident.id, { rootCause: 'inconclusive', confidence: null });
+  const stale = store.addAction(incident.id, {
+    tool: 'get_container_logs', params: { id: 'demo-db' },
+    claimedRisk: 'READ_ONLY', realRisk: 'READ_ONLY', rationale: 'x'
+  });
+  store.updateIncidentStatus(incident.id, 'AWAITING_APPROVAL');
+  store.addEvidence(incident.id, [{ resourceId: null, sourceTool: 'get_container_logs', summary: 'connection refused', data: null }]);
+
+  const result = await engine.rediagnose(incident.id);
+
+  assert.equal(result.status, 'AWAITING_APPROVAL');
+  assert.equal(result.root_cause, 'now I can tell: demo-db is down');
+  assert.equal(store.getAction(stale.id).status, 'superseded');
+  assert.ok(seenEvidenceCount >= 1, 'existing evidence should be replayed into the new prompt');
+
+  const proposals = store.getActions(incident.id).filter(a => a.status === 'proposed');
+  assert.equal(proposals.length, 1);
+  assert.equal(proposals[0].tool_name, 'restart_container');
+});

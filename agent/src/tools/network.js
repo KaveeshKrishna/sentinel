@@ -2,7 +2,6 @@
 
 const fs = require('fs');
 const http = require('http');
-const readline = require('readline');
 const Dockerode = require('dockerode');
 const { getSshSessions } = require('../collectors/network');
 
@@ -26,11 +25,65 @@ function getCloudflaredStatus() {
   }
 }
 
+// Tail-seek tuning. Caddy's default roll size is 100 MB, and this runs on
+// every inspect_network call — reading the whole file from byte 0 each
+// time (the original implementation) meant ~100 MB of I/O and JSON
+// parsing to answer a question about the last few minutes.
+const TAIL_CHUNK_BYTES = 256 * 1024;
+const MAX_TAIL_BYTES = 16 * 1024 * 1024; // hard ceiling: a very busy host, or an unparseable file, can't blow memory
+
+/** Unix-seconds `ts` from one Caddy JSON log line, in ms; null if unparseable. */
+function parseLineTs(line) {
+  try {
+    const ts = JSON.parse(line).ts;
+    return typeof ts === 'number' ? ts * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Parse Caddy JSON access logs from the last `minutes` minutes.
- * Known limitation: reads the whole file from the start on every call —
- * fine for now, tracked for a tail-seek rewrite once log files get large
- * (see ARCHITECTURE.md known issues).
+ * Read backwards from EOF until far enough back to cover `cutoffMs`.
+ *
+ * Caddy writes chronologically, so once a complete line at the front of
+ * the accumulated buffer is older than the cutoff, everything before it
+ * is older still and can be skipped entirely.
+ */
+async function readTailLines(filePath, cutoffMs) {
+  const fh = await fs.promises.open(filePath, 'r');
+  try {
+    const { size } = await fh.stat();
+    let pos = size;
+    let buf = Buffer.alloc(0);
+
+    while (pos > 0 && buf.length < MAX_TAIL_BYTES) {
+      const chunkSize = Math.min(TAIL_CHUNK_BYTES, pos);
+      pos -= chunkSize;
+      const chunk = Buffer.alloc(chunkSize);
+      await fh.read(chunk, 0, chunkSize, pos);
+      buf = Buffer.concat([chunk, buf]);
+
+      // The buffer's first line is partial unless we've reached byte 0,
+      // so the first *complete* one starts just past the first newline.
+      const nl = buf.indexOf(0x0a);
+      if (pos > 0 && nl === -1) continue;
+      const complete = buf.subarray(pos === 0 ? 0 : nl + 1).toString('utf8');
+      const firstLine = complete.split('\n', 1)[0];
+      const ts = parseLineTs(firstLine);
+      if (ts !== null && ts < cutoffMs) break; // read back far enough
+    }
+
+    const lines = buf.toString('utf8').split('\n');
+    if (pos > 0) lines.shift(); // drop the partial line we started mid-way through
+    return lines;
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * Parse Caddy JSON access logs from the last `minutes` minutes, reading
+ * only the tail of the file rather than all of it (see readTailLines).
  */
 async function getCaddyStats(minutes) {
   const stats = {
@@ -44,12 +97,7 @@ async function getCaddyStats(minutes) {
     const cutoff = Date.now() - minutes * 60 * 1000;
     const requests = [];
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(CADDY_LOG, { encoding: 'utf8' }),
-      crlfDelay: Infinity
-    });
-
-    for await (const line of rl) {
+    for (const line of await readTailLines(CADDY_LOG, cutoff)) {
       if (!line.trim()) continue;
       try {
         const entry = JSON.parse(line);
@@ -187,3 +235,4 @@ module.exports = function registerNetworkTools(registry) {
 };
 
 module.exports._parseCaddyfile = parseCaddyfile;
+module.exports._readTailLines = readTailLines;

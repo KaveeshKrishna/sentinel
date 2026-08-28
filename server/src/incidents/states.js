@@ -19,14 +19,19 @@ const TERMINAL_STATES = ['RESOLVED', 'FAILED', 'DISMISSED'];
  * running anything (a deterministic 400, not an execution failure), so
  * the incident goes back to awaiting a (different, or corrected) action
  * rather than burning to terminal FAILED — see engine.js's approve().
+ * DIAGNOSED/AWAITING_APPROVAL -> INVESTIGATING is the re-diagnosis
+ * path: an approved READ_ONLY *investigation* action appended new
+ * evidence, so the incident can be re-diagnosed against it rather than
+ * being stuck with a diagnosis the model itself said was inconclusive
+ * (engine.js's rediagnose()).
  * DISMISSED is reachable from any non-terminal state — a human can walk
  * away from an incident at any point before it's resolved.
  */
 const TRANSITIONS = {
   DETECTED: ['INVESTIGATING', 'DISMISSED'],
   INVESTIGATING: ['DIAGNOSED', 'INVESTIGATING', 'FAILED', 'DISMISSED'],
-  DIAGNOSED: ['AWAITING_APPROVAL', 'DISMISSED'],
-  AWAITING_APPROVAL: ['REMEDIATING', 'DISMISSED'],
+  DIAGNOSED: ['AWAITING_APPROVAL', 'INVESTIGATING', 'DISMISSED'],
+  AWAITING_APPROVAL: ['REMEDIATING', 'INVESTIGATING', 'DISMISSED'],
   REMEDIATING: ['VERIFYING', 'FAILED', 'AWAITING_APPROVAL', 'DISMISSED'],
   VERIFYING: ['RESOLVED', 'FAILED', 'DISMISSED'],
   RESOLVED: [],

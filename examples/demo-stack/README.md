@@ -14,11 +14,18 @@ docker compose -p sentinel-demo -f examples/demo-stack/compose.yml up -d --build
 
 Confirm `demo-api` is healthy: `curl http://127.0.0.1:8890/health` → `{"status":"ok"}`.
 
-## 2. Register the dependency edge
+## 2. The dependency edge (now automatic)
 
-Sentinel's dependency graph doesn't auto-discover `depends_on` from
-compose files (see ARCHITECTURE.md roadmap) — register it once, authenticated,
-against your running Sentinel instance:
+Sentinel auto-discovers Docker Compose `depends_on` edges from the
+labels compose stamps on each container, on every detector poll — so
+`demo-api depends_on demo-db` registers itself within ~5 seconds of the
+stack coming up. Nothing to do here.
+
+This edge matters: `docker stop demo-db` exits **0**, and a clean exit
+only raises an incident *because* something depends on it.
+
+For a non-compose dependency (or to declare one by hand), the explicit
+route still exists:
 
 ```bash
 curl -X POST http://localhost:<sentinel-port>/api/resources/relationships \

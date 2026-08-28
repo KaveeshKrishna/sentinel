@@ -83,3 +83,65 @@ test('skips a site block with no reverse_proxy directive', () => {
     { domain: 'app.example.com', proxyTarget: '127.0.0.1:8081', port: 8081 }
   ]);
 });
+
+// ── tail-seek log reader ────────────────────────────────────────────
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+const { _readTailLines } = require('./network');
+
+function writeLog(entries) {
+  const p = path.join(os.tmpdir(), `caddy-tail-${crypto.randomUUID()}.log`);
+  fs.writeFileSync(p, entries.map(e => JSON.stringify(e)).join('\n') + '\n');
+  return p;
+}
+
+test('readTailLines returns every line when the whole file is within the cutoff', async () => {
+  const now = Date.now() / 1000;
+  const p = writeLog([
+    { ts: now - 10, status: 200 },
+    { ts: now - 5, status: 200 },
+    { ts: now - 1, status: 500 }
+  ]);
+  const lines = (await _readTailLines(p, Date.now() - 60000)).filter(Boolean);
+  assert.equal(lines.length, 3);
+  fs.rmSync(p);
+});
+
+test('readTailLines stops reading backwards once it passes the cutoff, but still covers it', async () => {
+  const now = Date.now() / 1000;
+  // 20k old entries then 5 recent ones — comfortably more than one chunk.
+  const old = Array.from({ length: 20000 }, (_, i) => ({ ts: now - 86400 - i, status: 200, pad: 'x'.repeat(100) }));
+  const recent = Array.from({ length: 5 }, (_, i) => ({ ts: now - i, status: 500 }));
+  const p = writeLog([...old.reverse(), ...recent]);
+
+  const cutoff = Date.now() - 60000;
+  const lines = (await _readTailLines(p, cutoff)).filter(Boolean);
+
+  // Must not have read the entire file back...
+  assert.ok(lines.length < 20005, 'should not return every line in the file');
+  // ...but must still contain every entry newer than the cutoff.
+  const recentFound = lines.map(l => JSON.parse(l)).filter(e => e.ts * 1000 >= cutoff);
+  assert.equal(recentFound.length, 5);
+  fs.rmSync(p);
+});
+
+test('readTailLines never returns a truncated partial line', async () => {
+  const now = Date.now() / 1000;
+  const entries = Array.from({ length: 5000 }, (_, i) => ({ ts: now - i, status: 200, pad: 'y'.repeat(200) }));
+  const p = writeLog(entries.reverse());
+  const lines = (await _readTailLines(p, Date.now() - 60000)).filter(Boolean);
+  for (const line of lines) {
+    assert.doesNotThrow(() => JSON.parse(line), `line should be complete JSON: ${line.slice(0, 40)}…`);
+  }
+  fs.rmSync(p);
+});
+
+test('readTailLines handles an empty file without throwing', async () => {
+  const p = path.join(os.tmpdir(), `caddy-empty-${crypto.randomUUID()}.log`);
+  fs.writeFileSync(p, '');
+  const lines = (await _readTailLines(p, Date.now() - 60000)).filter(Boolean);
+  assert.equal(lines.length, 0);
+  fs.rmSync(p);
+});

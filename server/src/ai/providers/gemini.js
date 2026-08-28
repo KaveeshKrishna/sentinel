@@ -1,5 +1,7 @@
 'use strict';
 
+const { toGeminiSchema } = require('./geminiSchema');
+
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com';
 
 /**
@@ -8,15 +10,25 @@ const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com';
  * string, so it's returned as-is; no separate tool-call concept is used.
  */
 async function chat({ system, messages, responseSchema, apiKey, model, baseUrl, fetchImpl = fetch }) {
+  // Gemini's responseSchema dialect is an OpenAPI-3 subset that can't
+  // express every JSON Schema (see geminiSchema.js). Where it can, send
+  // it and get real provider-side enforcement; where it can't — notably
+  // DIAGNOSIS_SCHEMA, whose per-action `params` is deliberately
+  // free-form — fall back to responseMimeType alone rather than sending
+  // a lossy conversion that would constrain the model's output shape
+  // incorrectly. Either way the orchestrator's own ajv validation is
+  // what actually gates whether a response is trusted.
+  const geminiSchema = responseSchema ? toGeminiSchema(responseSchema) : null;
+
   const body = {
     systemInstruction: system ? { parts: [{ text: system }] } : undefined,
     contents: messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
-    // Gemini's responseSchema dialect is an OpenAPI-3 subset — it doesn't
-    // accept every JSON Schema keyword (e.g. additionalProperties).
-    // responseMimeType alone (json output, unconstrained shape) is what's
-    // actually relied on here; the orchestrator's own ajv validation is
-    // still the real gate before anything is trusted.
-    generationConfig: responseSchema ? { responseMimeType: 'application/json' } : undefined
+    generationConfig: responseSchema
+      ? {
+        responseMimeType: 'application/json',
+        ...(geminiSchema && { responseSchema: geminiSchema })
+      }
+      : undefined
   };
 
   const url = `${baseUrl || DEFAULT_BASE_URL}/v1beta/models/${model || 'gemini-2.0-flash'}:generateContent?key=${encodeURIComponent(apiKey)}`;

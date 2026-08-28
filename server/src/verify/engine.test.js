@@ -43,3 +43,20 @@ test('a thrown error from the verify call itself is recorded as a failed check, 
   assert.match(result.checks[0].detail, /agent unreachable/);
   _resetClientForTesting();
 });
+
+test('a 404 (tool has no verify check) fails fast as unverifiable instead of burning every retry', async () => {
+  const { AgentError } = require('../agent/client');
+  let calls = 0;
+  _setClientForTesting({
+    verifyTool: async () => {
+      calls++;
+      throw new AgentError('Tool "get_container_logs" has no verify check', 404, {});
+    }
+  });
+
+  const result = await verifyAction('get_container_logs', { id: 'x' }, { maxAttempts: 5, retryDelayMs: 0 });
+  assert.equal(result.ok, false);
+  assert.equal(result.unverifiable, true);
+  assert.equal(calls, 1, 'a deterministic 404 must not be retried');
+  _resetClientForTesting();
+});

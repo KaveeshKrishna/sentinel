@@ -3,7 +3,27 @@
 const express = require('express');
 const router = express.Router();
 const { getAIConfig, setAIConfig, clearAIConfig, getDecryptedAPIKey, PROVIDERS } = require('../settings/aiConfig');
+const { getDetectorConfig, setDetectorConfig, resetDetectorConfig, DEFAULTS, LIMITS } = require('../settings/detectorConfig');
 const { getProvider } = require('../ai/provider');
+
+// Detector tuning — cooldown, sustain windows, CPU/RAM/disk thresholds.
+// Defaults and limits ship alongside the values so the UI can render
+// sensible inputs without duplicating the schema.
+router.get('/detector', (_req, res) => {
+  res.json({ config: getDetectorConfig(), defaults: DEFAULTS, limits: LIMITS });
+});
+
+router.put('/detector', (req, res) => {
+  try {
+    res.json({ config: setDetectorConfig(req.body || {}), defaults: DEFAULTS, limits: LIMITS });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/detector', (_req, res) => {
+  res.json({ config: resetDetectorConfig(), defaults: DEFAULTS, limits: LIMITS });
+});
 
 router.get('/ai', (_req, res) => {
   res.json(getAIConfig());

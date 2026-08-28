@@ -124,6 +124,13 @@ async function listContainersDetailed(docker) {
       ports,
       health: inspect.State?.Health?.Status || 'N/A',
       composeProject: c.Labels?.['com.docker.compose.project'] || null,
+      // Compose v2 records the service name and its `depends_on` graph as
+      // labels. Exposing them lets server/'s graph auto-discovery derive
+      // dependency edges instead of requiring each one to be registered
+      // by hand — the agent stays a pure reporter, the graph logic stays
+      // unprivileged.
+      composeService: c.Labels?.['com.docker.compose.service'] || null,
+      composeDependsOn: c.Labels?.['com.docker.compose.depends_on'] || null,
       created: c.Created
     };
   }));

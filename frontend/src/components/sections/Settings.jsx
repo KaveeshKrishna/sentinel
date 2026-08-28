@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../api/client';
+import DetectorSettings from './DetectorSettings';
 
 const PROVIDERS = [
   { id: 'anthropic', label: 'Anthropic', modelHint: 'e.g. claude-sonnet-5', needsBaseUrl: false },
@@ -80,7 +81,7 @@ export default function Settings() {
   if (loading) return <div className="empty-state"><div className="boot-spinner" /></div>;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 560 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 720 }}>
       <div className="card">
         <div className="card-title">🤖 AI Provider</div>
         <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 16 }}>
@@ -171,6 +172,8 @@ export default function Settings() {
           </div>
         </form>
       </div>
+
+      <DetectorSettings />
     </div>
   );
 }

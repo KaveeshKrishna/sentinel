@@ -36,6 +36,7 @@ export default function IncidentDetail() {
   const [busyActionId, setBusyActionId] = useState(null);
   const [dismissing, setDismissing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [rediagnosing, setRediagnosing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -59,6 +60,18 @@ export default function IncidentDetail() {
       alert(err.message);
     } finally {
       setBusyActionId(null);
+    }
+  }
+
+  async function rediagnose() {
+    setRediagnosing(true);
+    try {
+      await api.post(`/incidents/${id}/rediagnose`);
+      await load();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setRediagnosing(false);
     }
   }
 
@@ -105,6 +118,12 @@ export default function IncidentDetail() {
         <div style={{ fontSize: '1rem', fontWeight: 600 }}>Incident #{incident.id}</div>
         <StatusBadge status={incident.status} />
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          {!isTerminal && (
+            <button id="btn-rediagnose-incident" className="btn btn-secondary btn-sm" onClick={rediagnose} disabled={rediagnosing}
+              title="Re-run the AI diagnosis against all evidence gathered so far">
+              {rediagnosing ? 'Diagnosing…' : '🔄 Re-diagnose'}
+            </button>
+          )}
           {!isTerminal && (
             <button id="btn-dismiss-incident" className="btn btn-danger btn-sm" onClick={dismiss} disabled={dismissing}>
               {dismissing ? '…' : '✕ Dismiss'}
@@ -180,7 +199,14 @@ export default function IncidentDetail() {
                       onClick={() => approve(action.id)}
                       disabled={busyActionId === action.id}
                     >
-                      {busyActionId === action.id ? 'Executing…' : '✓ Approve & Execute'}
+                      {busyActionId === action.id
+                        ? 'Running…'
+                        : action.real_risk === 'READ_ONLY'
+                          // A READ_ONLY action gathers evidence; it doesn't
+                          // remediate anything, so "Approve & Execute" would
+                          // overstate what clicking it does.
+                          ? '🔍 Run & Add Evidence'
+                          : '✓ Approve & Execute'}
                     </button>
                   </div>
                 )}

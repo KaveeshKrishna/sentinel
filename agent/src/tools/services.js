@@ -48,6 +48,26 @@ async function getStatus(service) {
   return status || 'unknown';
 }
 
+/**
+ * Is this unit socket-activated (a companion `<name>.socket` that's
+ * active)? If so, stopping the service does not keep it stopped —
+ * systemd restarts it the moment anything touches the socket, and
+ * Sentinel's own agent polls the Docker socket every few seconds, so
+ * `stop_service docker` reliably "fails" within one poll.
+ *
+ * Reported rather than prevented: stopping the unit is still exactly
+ * what was asked for, and the socket is a legitimate part of how the
+ * unit is configured. Surfacing it in the result (and so in the
+ * incident's evidence) is what stops it looking like a bug in Sentinel.
+ */
+async function isSocketActivated(service) {
+  try {
+    return (await systemctl(['is-active', `${service}.socket`])) === 'active';
+  } catch {
+    return false; // no such .socket unit
+  }
+}
+
 module.exports = function registerServiceTools(registry) {
   registry.register({
     name: 'list_services',
@@ -119,7 +139,7 @@ module.exports = function registerServiceTools(registry) {
 
   registry.register({
     name: 'stop_service',
-    description: 'Stop a running managed service.',
+    description: 'Stop a running managed service. Note: a socket-activated unit (e.g. docker, which has docker.socket) will be restarted by systemd on the next access, so stopping it does not keep it stopped.',
     risk: 'HIGH_RISK',
     parameters: {
       type: 'object',
@@ -130,7 +150,16 @@ module.exports = function registerServiceTools(registry) {
     handler: async ({ service }) => {
       assertManaged(service);
       await systemctl(['stop', service]);
-      return { service, action: 'stop' };
+
+      const socketActivated = await isSocketActivated(service);
+      return {
+        service,
+        action: 'stop',
+        socketActivated,
+        ...(socketActivated && {
+          warning: `${service} is socket-activated (${service}.socket is still active) — systemd will restart it on the next access. Stop ${service}.socket too if you need it to stay down.`
+        })
+      };
     },
     verify: async ({ service }) => ({ ok: (await getStatus(service)) !== 'active' })
   });

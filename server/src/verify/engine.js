@@ -34,6 +34,16 @@ async function verifyAction(tool, params, { maxAttempts = MAX_ATTEMPTS, retryDel
       checks.push({ attempt, ok: !!result.ok, detail: result.detail ?? null });
       if (result.ok) return { ok: true, checks };
     } catch (err) {
+      // A 404 from the agent means the tool doesn't exist or has no
+      // verify function at all — deterministic, so retrying it just
+      // burns the full retry budget in wall-clock time to reach the
+      // same answer. Report it as its own outcome (`unverifiable`)
+      // rather than as a converge-failure: "this tool has nothing to
+      // check" and "the check ran and said no" are different facts.
+      if (err.name === 'AgentError' && err.status === 404) {
+        checks.push({ attempt, ok: false, detail: `no verify check available: ${err.message}` });
+        return { ok: false, unverifiable: true, checks };
+      }
       checks.push({ attempt, ok: false, detail: `verify call failed: ${err.message}` });
     }
     if (attempt < maxAttempts) await sleep(retryDelayMs);

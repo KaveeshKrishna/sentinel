@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const { getAgentClient } = require('../agent/client');
 const { logEvent } = require('../activity/logger');
+const { suppressForToolCall } = require('../incidents/suppression');
 
 router.get('/containers', async (_req, res) => {
   try {
@@ -31,6 +32,9 @@ router.get('/containers/:id/logs', async (req, res) => {
 // step before it can set that flag.
 router.post('/containers/:id/start', async (req, res) => {
   try {
+    // See incidents/suppression.js — a container the user just acted on
+    // themselves shouldn't raise an incident for doing what they asked.
+    suppressForToolCall('start_container', { id: req.params.id });
     const result = await getAgentClient().callTool('start_container', { id: req.params.id }, { approved: true });
     logEvent('DOCKER_START', `Container ${result.name} started`);
     res.json({ ok: true });
@@ -41,6 +45,9 @@ router.post('/containers/:id/start', async (req, res) => {
 
 router.post('/containers/:id/stop', async (req, res) => {
   try {
+    // See incidents/suppression.js — a container the user just acted on
+    // themselves shouldn't raise an incident for doing what they asked.
+    suppressForToolCall('stop_container', { id: req.params.id });
     const result = await getAgentClient().callTool('stop_container', { id: req.params.id }, { approved: true });
     logEvent('DOCKER_STOP', `Container ${result.name} stopped`);
     res.json({ ok: true });
@@ -51,6 +58,9 @@ router.post('/containers/:id/stop', async (req, res) => {
 
 router.post('/containers/:id/restart', async (req, res) => {
   try {
+    // See incidents/suppression.js — a container the user just acted on
+    // themselves shouldn't raise an incident for doing what they asked.
+    suppressForToolCall('restart_container', { id: req.params.id });
     const result = await getAgentClient().callTool('restart_container', { id: req.params.id }, { approved: true });
     logEvent('DOCKER_RESTART', `Container ${result.name} restarted`);
     res.json({ ok: true });
