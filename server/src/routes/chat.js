@@ -79,6 +79,16 @@ router.post('/escalate', (req, res) => {
  * `data: {json}` line. Streaming is the point — the operator watches
  * the tool calls happen rather than waiting on a single opaque reply.
  */
+// SSE comment lines (start with ':') are ignored by every SSE parser but
+// still count as bytes on the wire, resetting any intermediary's
+// idle-connection timer. This VPS routes chat requests through both
+// cloudflared and Caddy; Cloudflare's edge enforces a 100s idle cutoff.
+// A single slow provider call (seen live at 20s+ against a free-tier
+// model, sometimes with a retry on top) can otherwise go that long with
+// zero bytes written, which is indistinguishable from a dead connection
+// to anything watching for one.
+const KEEPALIVE_MS = 15000;
+
 router.post('/', async (req, res) => {
   const { message } = req.body || {};
   if (!message || typeof message !== 'string' || !message.trim()) {
@@ -94,31 +104,72 @@ router.post('/', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  // Defensive: a write after the client is gone should never be able to
+  // crash the process via an unhandled 'error' event on the response.
+  res.on('error', () => {});
   res.flushHeaders();
 
-  const send = (type, data) => res.write(`data: ${JSON.stringify({ type, ...data, ts: Date.now() })}\n\n`);
+  // res.on('close') fires both on a normal finish and on the client
+  // hanging up early — writableEnded is what tells those apart. Checked
+  // between chat.js's steps so an abandoned turn stops spending provider
+  // quota and agent tool calls the moment nobody is listening, instead
+  // of continuing to completion in the background (observed live:
+  // reopening a session after its stream had already errored out showed
+  // an extra tool call and a final answer that ran after the browser
+  // had already given up).
+  let clientGone = false;
+  res.on('close', () => {
+    if (!res.writableEnded) clientGone = true;
+  });
+
+  const keepalive = setInterval(() => {
+    if (!res.writableEnded) {
+      try { res.write(': keepalive\n\n'); } catch { /* connection already gone */ }
+    }
+  }, KEEPALIVE_MS);
+
+  const send = (type, data) => {
+    if (res.writableEnded) return;
+    try { res.write(`data: ${JSON.stringify({ type, ...data, ts: Date.now() })}\n\n`); } catch { /* connection already gone */ }
+  };
 
   send('session', { sessionId: session.id, title: session.title });
 
   try {
-    const { answer, toolCalls, suggestedIncident } = await runChat({
+    const { answer, toolCalls, suggestedIncident, cancelled } = await runChat({
       question: message.trim(),
       history,
-      onEvent: send
+      onEvent: send,
+      isCancelled: () => clientGone
     });
-    chatStore.addMessage(session.id, {
-      role: 'assistant',
-      content: answer,
-      toolCalls: toolCalls.length > 0 || suggestedIncident ? { calls: toolCalls, suggestedIncident } : null
-    });
+    if (!cancelled) {
+      chatStore.addMessage(session.id, {
+        role: 'assistant',
+        content: answer,
+        toolCalls: toolCalls.length > 0 || suggestedIncident ? { calls: toolCalls, suggestedIncident } : null
+      });
+    } else if (toolCalls.length > 0) {
+      // Still worth persisting what was gathered before the connection
+      // died, so reopening the session shows a true partial state
+      // instead of either nothing or a turn that quietly kept running.
+      chatStore.addMessage(session.id, {
+        role: 'assistant',
+        content: '(connection interrupted before this finished)',
+        toolCalls: { calls: toolCalls, suggestedIncident: null }
+      });
+    }
   } catch (err) {
     // The turn's own error surfaces in the stream (the response has
     // already been committed with a 200, so a status code can't).
     send('error', { message: err.message });
+  } finally {
+    clearInterval(keepalive);
   }
 
-  res.write('event: done\ndata: {}\n\n');
-  res.end();
+  if (!res.writableEnded) {
+    try { res.write('event: done\ndata: {}\n\n'); } catch { /* connection already gone */ }
+    res.end();
+  }
 });
 
 module.exports = router;

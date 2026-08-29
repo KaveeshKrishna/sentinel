@@ -22,6 +22,21 @@ const MAX_STEPS = 8;
 const CHAT_RESULT_LIMIT = 3000;
 
 /**
+ * Wall-clock ceiling on one turn, independent of MAX_STEPS.
+ *
+ * Found live: a slow free-tier model (already observed at 20s+ for a
+ * single call, before the transient-retry work above sometimes adds a
+ * second attempt on top) can make an 8-step conversation run for
+ * minutes. MAX_STEPS alone doesn't bound that — it stops a model from
+ * taking too many cheap turns, not a model that takes few but very slow
+ * ones. Checked between steps (see runChat), so a turn stops well
+ * before it could plausibly trip an intermediary's idle-connection
+ * timeout (this VPS routes through both cloudflared and Caddy; the
+ * former enforces a 100s idle cutoff at Cloudflare's edge).
+ */
+const MAX_TURN_MS = 60000;
+
+/**
  * Extra tries for a provider call that fails with a status suggesting
  * the failure is on the provider's side, not a real misconfiguration.
  *
@@ -124,6 +139,13 @@ async function callProviderWithRetry(adapter, chatArgs, { provider, model, step,
   throw lastErr;
 }
 
+/** Pulled out for direct unit testing — real-timing tests can't cheaply hit both branches. */
+function timeoutAnswer(toolCallCount) {
+  return toolCallCount > 0
+    ? "This is taking longer than expected. Here's what I found before running out of time — ask again to continue."
+    : "This is taking longer than expected and I wasn't able to find anything yet. Try again, or ask something narrower.";
+}
+
 /** Prior turns, in the alternating shape every adapter expects. */
 function historyToMessages(history) {
   return history
@@ -153,9 +175,14 @@ function historyToMessages(history) {
  * @param {string} opts.question
  * @param {Array<{role,content}>} [opts.history] - prior turns
  * @param {(type: string, data: object) => void} [opts.onEvent] - stream sink
- * @returns {Promise<{answer, toolCalls, suggestedIncident}>}
+ * @param {() => boolean} [opts.isCancelled] - polled between steps; when
+ *   it returns true (the caller's HTTP connection died), the loop stops
+ *   making further provider/tool calls rather than continuing to spend
+ *   quota and agent calls on a turn nobody is listening to anymore.
+ * @param {number} [opts.maxTurnMs] - wall-clock ceiling override, for tests.
+ * @returns {Promise<{answer, toolCalls, suggestedIncident, cancelled?}>}
  */
-async function runChat({ question, history = [], onEvent = () => {} }) {
+async function runChat({ question, history = [], onEvent = () => {}, isCancelled = () => false, maxTurnMs = MAX_TURN_MS }) {
   const config = getAIConfig();
   if (!config.configured) {
     throw new Error('No AI provider configured. Add one in Settings first.');
@@ -172,8 +199,18 @@ async function runChat({ question, history = [], onEvent = () => {} }) {
   const messages = [...historyToMessages(history), { role: 'user', content: question }];
 
   const toolCalls = [];
+  const turnStartedAt = Date.now();
 
   for (let step = 1; step <= MAX_STEPS; step++) {
+    if (isCancelled()) {
+      return { answer: null, toolCalls, suggestedIncident: null, cancelled: true };
+    }
+    if (Date.now() - turnStartedAt > maxTurnMs) {
+      const timedOut = timeoutAnswer(toolCalls.length);
+      onEvent('answer', { text: timedOut });
+      return { answer: timedOut, toolCalls, suggestedIncident: null };
+    }
+
     const startedAt = Date.now();
     let result;
     try {
@@ -285,6 +322,6 @@ function normalizeSuggestion(raw) {
 }
 
 module.exports = {
-  runChat, buildChatSystemPrompt, normalizeSuggestion, MAX_TOOL_CALLS, MAX_STEPS,
-  retryableProviderStatus, PROVIDER_RETRY_ATTEMPTS, PROVIDER_RETRY_DELAY_MS
+  runChat, buildChatSystemPrompt, normalizeSuggestion, MAX_TOOL_CALLS, MAX_STEPS, MAX_TURN_MS,
+  retryableProviderStatus, PROVIDER_RETRY_ATTEMPTS, PROVIDER_RETRY_DELAY_MS, timeoutAnswer
 };

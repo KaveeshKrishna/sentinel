@@ -18,7 +18,7 @@ const { _setProviderForTesting, _resetProviderForTesting } = require('./provider
 const { _setClientForTesting, _resetClientForTesting, AgentError } = require('../agent/client');
 const {
   runChat, normalizeSuggestion, buildChatSystemPrompt, MAX_TOOL_CALLS, MAX_STEPS,
-  retryableProviderStatus, PROVIDER_RETRY_ATTEMPTS
+  retryableProviderStatus, PROVIDER_RETRY_ATTEMPTS, timeoutAnswer
 } = require('./chat');
 
 before(() => {
@@ -355,6 +355,61 @@ test('a non-retryable status (bad API key) fails on the first attempt, no retry 
 
   await assert.rejects(() => runChat({ question: 'status?' }), /Invalid API key/);
   assert.equal(provider.calls.length, 1, 'a 401 is never worth retrying — it will fail identically every time');
+});
+
+// ── Abandoned/slow turns ─────────────────────────────────────────────
+// Reproduces a second real bug found the same session: reopening a chat
+// after the browser reported "network error" showed an extra tool call
+// and a final answer that had run *after* the connection was already
+// gone — the server kept working on a turn nobody was listening to.
+
+test('a cancelled turn stops before the next provider call and makes no more tool calls', async () => {
+  const provider = scriptedProvider([
+    { action: 'tool', tool: 'get_system_metrics', params: {} },
+    { action: 'tool', tool: 'get_system_metrics', params: {} }, // must never be reached
+    { action: 'answer', answer: 'unreachable' }
+  ]);
+  _setProviderForTesting(provider.adapter);
+  const agent = fakeAgent({ onCall: () => ({ cpu: 4 }) });
+  _setClientForTesting(agent.client);
+
+  let cancelAfterFirstTool = false;
+  const result = await runChat({
+    question: 'keep checking',
+    isCancelled: () => cancelAfterFirstTool,
+    onEvent: (type) => { if (type === 'tool_result') cancelAfterFirstTool = true; }
+  });
+
+  assert.equal(result.cancelled, true);
+  assert.equal(result.answer, null);
+  assert.equal(agent.calls.length, 1, 'only the tool call already in flight when cancellation happened runs');
+  assert.equal(provider.seen.length, 1, 'the step after cancellation was detected never asks the model again');
+});
+
+test('a turn that exceeds its wall-clock budget stops and reports what it found, not a hang', async () => {
+  // An artificial delay per provider call guarantees real elapsed time
+  // passes between loop iterations regardless of test-machine speed —
+  // asserting the exact iteration a timing-based cutoff fires on would
+  // otherwise be flaky.
+  const provider = scriptedProvider([
+    { action: 'tool', tool: 'get_system_metrics', params: {} },
+    { action: 'tool', tool: 'get_system_metrics', params: {} },
+    { action: 'answer', answer: 'unreachable' }
+  ]);
+  const slowAdapter = { chat: async (args) => { await new Promise(r => setTimeout(r, 30)); return provider.adapter.chat(args); } };
+  _setProviderForTesting(slowAdapter);
+  _setClientForTesting(fakeAgent({ onCall: () => ({ cpu: 4 }) }).client);
+
+  const result = await runChat({ question: 'slow', maxTurnMs: 25 });
+  assert.match(result.answer, /taking longer than expected/);
+  assert.equal(result.cancelled, undefined);
+  assert.ok(provider.seen.length < 3, 'stops well before exhausting MAX_STEPS');
+});
+
+test('timeoutAnswer picks the "found something" vs "found nothing" message correctly', () => {
+  assert.match(timeoutAnswer(0), /wasn't able to find anything yet/);
+  assert.match(timeoutAnswer(1), /here's what I found/i);
+  assert.match(timeoutAnswer(3), /here's what I found/i);
 });
 
 test('normalizeSuggestion drops a partial suggestion rather than escalating on it', () => {

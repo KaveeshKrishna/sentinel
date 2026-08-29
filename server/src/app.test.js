@@ -22,6 +22,8 @@ const { getSetting, setSetting } = require('./db/settings');
 const { SETUP_TOKEN_KEY } = require('./setup/bootstrap');
 const { countUsers } = require('./auth/users');
 const { _setClientForTesting, _resetClientForTesting } = require('./agent/client');
+const { _setProviderForTesting, _resetProviderForTesting } = require('./ai/provider');
+const { setAIConfig, clearAIConfig } = require('./settings/aiConfig');
 const store = require('./incidents/store');
 const { upsertResource } = require('./graph/resources');
 
@@ -647,6 +649,64 @@ test('POST /api/chat streams an error event rather than failing the request when
     assert.match(body, /"type":"session"/);
     assert.match(body, /"type":"error"/);
     assert.match(body, /No AI provider configured/);
+  });
+});
+
+test('abandoning a POST /api/chat request stops the turn from continuing to spend tool calls', async () => {
+  // Reproduces a real bug: the browser reported "network error" mid-turn,
+  // but reopening the session afterward showed a tool call and a final
+  // answer that had run *after* the connection was already gone. The
+  // server must notice the client left and stop, not keep working.
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+
+    let toolCallCount = 0;
+    _setClientForTesting({
+      listTools: async () => [{ name: 'get_system_metrics', risk: 'READ_ONLY', description: 'x', parameters: { type: 'object', properties: {} } }],
+      callTool: async () => {
+        toolCallCount++;
+        await new Promise(r => setTimeout(r, 50)); // gives the abort time to land between steps
+        return { cpu: 4 };
+      },
+      verifyTool: async () => ({ ok: true })
+    });
+    // A provider that always asks for another tool call — if the server
+    // doesn't notice the client is gone, it will keep going until
+    // MAX_STEPS, making far more than one or two tool calls.
+    _setProviderForTesting({
+      chat: async () => ({
+        text: JSON.stringify({ action: 'tool', tool: 'get_system_metrics', params: {} }),
+        toolCalls: [], usage: {}
+      })
+    });
+    setAIConfig({ provider: 'anthropic', model: 'test-model', apiKey: 'sk-test-key' });
+
+    try {
+      const controller = new AbortController();
+      const fetchPromise = fetch(`${base}/api/chat`, {
+        method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'keep checking' }),
+        signal: controller.signal
+      }).catch(() => {}); // the abort itself rejects the fetch — expected
+
+      await new Promise(r => setTimeout(r, 120)); // let a tool call or two actually happen
+      controller.abort();
+      await fetchPromise;
+
+      const countAtAbort = toolCallCount;
+      assert.ok(countAtAbort >= 1, 'at least one tool call had a chance to run before abort');
+
+      // Give any wrongly-still-running loop plenty of time to have made
+      // several more calls if it didn't actually stop.
+      await new Promise(r => setTimeout(r, 400));
+      assert.ok(
+        toolCallCount <= countAtAbort + 1,
+        `expected the turn to stop at/near abort (was ${countAtAbort}, now ${toolCallCount}) — it kept running`
+      );
+    } finally {
+      _resetProviderForTesting();
+      clearAIConfig();
+    }
   });
 });
 
