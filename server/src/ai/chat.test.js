@@ -16,7 +16,10 @@ const { getDb } = require('../db/connection');
 const { setAIConfig, clearAIConfig } = require('../settings/aiConfig');
 const { _setProviderForTesting, _resetProviderForTesting } = require('./provider');
 const { _setClientForTesting, _resetClientForTesting, AgentError } = require('../agent/client');
-const { runChat, normalizeSuggestion, buildChatSystemPrompt, MAX_TOOL_CALLS, MAX_STEPS } = require('./chat');
+const {
+  runChat, normalizeSuggestion, buildChatSystemPrompt, MAX_TOOL_CALLS, MAX_STEPS,
+  retryableProviderStatus, PROVIDER_RETRY_ATTEMPTS
+} = require('./chat');
 
 before(() => {
   migrate();
@@ -51,6 +54,25 @@ function scriptedProvider(steps) {
       }
     },
     seen
+  };
+}
+
+/**
+ * A provider that throws `failures.length` times (each with the given
+ * message) before finally returning `finalResponse` — models the real
+ * OpenRouter behavior found live: the identical request sometimes 404s
+ * and sometimes succeeds, with no config difference between calls.
+ */
+function flakyProvider(failures, finalResponse) {
+  const queue = [...failures];
+  const calls = [];
+  return {
+    calls,
+    chat: async (args) => {
+      calls.push(args);
+      if (queue.length > 0) throw new Error(queue.shift());
+      return { text: JSON.stringify(finalResponse), toolCalls: [], usage: {} };
+    }
   };
 }
 
@@ -273,6 +295,66 @@ test('runChat refuses to run at all with no AI provider configured', async () =>
     if (prev) process.env.AI_API_KEY = prev;
     setAIConfig({ provider: 'anthropic', model: 'test-model', apiKey: 'sk-test-key' });
   }
+});
+
+// ── Transient-provider retry ────────────────────────────────────────
+// Reproduces a real bug: an OpenRouter free-tier model returned a real
+// completion on some calls and "OpenAI-compatible API error (404):
+// Provider returned error" on others, for the byte-identical request.
+
+test('retryableProviderStatus recognises the transient classes and excludes auth/bad-request', () => {
+  for (const status of [404, 408, 429, 500, 502, 503, 504]) {
+    assert.equal(retryableProviderStatus(`OpenAI-compatible API error (${status}): x`), true, `status ${status}`);
+  }
+  for (const status of [400, 401, 403]) {
+    assert.equal(retryableProviderStatus(`OpenAI-compatible API error (${status}): x`), false, `status ${status}`);
+  }
+  assert.equal(retryableProviderStatus('a network error with no status'), false);
+  assert.equal(retryableProviderStatus(undefined), false);
+});
+
+test('a transient 404 is retried and the turn succeeds without surfacing an error', async () => {
+  const provider = flakyProvider(
+    ['OpenAI-compatible API error (404): Provider returned error'],
+    { action: 'answer', answer: 'all good' }
+  );
+  _setProviderForTesting(provider);
+  _setClientForTesting(fakeAgent().client);
+
+  const result = await runChat({ question: 'status?' });
+  assert.equal(result.answer, 'all good');
+  assert.equal(provider.calls.length, 2, 'one failed attempt, one retry that succeeded');
+
+  const rows = getDb().prepare("SELECT * FROM ai_runs WHERE purpose = 'chat' ORDER BY id").all();
+  assert.equal(rows.length, 2, 'both the failed and the succeeding attempt are recorded');
+  assert.match(rows[0].error, /404/);
+  assert.equal(rows[1].error, null);
+});
+
+test('a persistently failing transient status exhausts retries and surfaces the error', async () => {
+  const messages = Array.from({ length: PROVIDER_RETRY_ATTEMPTS + 1 }, () =>
+    'OpenAI-compatible API error (500): upstream unavailable');
+  const provider = flakyProvider(messages, { action: 'answer', answer: 'unreachable' });
+  _setProviderForTesting(provider);
+  _setClientForTesting(fakeAgent().client);
+
+  await assert.rejects(() => runChat({ question: 'status?' }), /upstream unavailable/);
+  assert.equal(provider.calls.length, PROVIDER_RETRY_ATTEMPTS + 1, 'tried the initial call plus every retry, then gave up');
+
+  const rows = getDb().prepare("SELECT * FROM ai_runs WHERE purpose = 'chat'").all();
+  assert.equal(rows.length, PROVIDER_RETRY_ATTEMPTS + 1, 'every failed attempt is individually recorded');
+});
+
+test('a non-retryable status (bad API key) fails on the first attempt, no retry wasted', async () => {
+  const provider = flakyProvider(
+    ['OpenAI-compatible API error (401): Invalid API key'],
+    { action: 'answer', answer: 'unreachable' }
+  );
+  _setProviderForTesting(provider);
+  _setClientForTesting(fakeAgent().client);
+
+  await assert.rejects(() => runChat({ question: 'status?' }), /Invalid API key/);
+  assert.equal(provider.calls.length, 1, 'a 401 is never worth retrying — it will fail identically every time');
 });
 
 test('normalizeSuggestion drops a partial suggestion rather than escalating on it', () => {

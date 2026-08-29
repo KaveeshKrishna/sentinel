@@ -21,6 +21,45 @@ const MAX_TOOL_CALLS = 5;
 const MAX_STEPS = 8;
 const CHAT_RESULT_LIMIT = 3000;
 
+/**
+ * Extra tries for a provider call that fails with a status suggesting
+ * the failure is on the provider's side, not a real misconfiguration.
+ *
+ * Found live against a real OpenRouter free-tier model
+ * (nvidia/nemotron-3-ultra-...:free): the identical request — same base
+ * URL, same key, same model, proven by a Settings "Test Connection" that
+ * succeeded moments earlier — returned a real completion on some calls
+ * and "OpenAI-compatible API error (404): Provider returned error" on
+ * others. A wrong base URL or bad key fails *every* call; this failed
+ * roughly half the time, which is the signature of OpenRouter routing a
+ * free model across multiple backend providers of varying availability,
+ * not a Sentinel or user configuration problem. A bounded retry turns
+ * "the conversation just dies" into "try again, usually works" — the
+ * request costs the same provider quota either way, since the failed
+ * attempt never got billed/counted as a completion.
+ *
+ * Deliberately scoped to chat only: unlike a diagnosis, a chat turn is a
+ * live, synchronous, user-initiated request with no background process
+ * to retry it later — diagnosis already has its own (much coarser,
+ * 30s+) resilience via the detector's checkStuckInvestigations backoff,
+ * and the post-incident report is deliberately single-attempt by design
+ * (see ai/report.js). 401/403/400 (bad key, bad request) are excluded
+ * on purpose — those fail identically every time, so retrying only
+ * burns quota and delays the real error reaching the operator.
+ */
+const PROVIDER_RETRY_ATTEMPTS = 2; // extra tries beyond the first
+const PROVIDER_RETRY_DELAY_MS = 300;
+const PROVIDER_RETRYABLE_STATUS = new Set([404, 408, 429, 500, 502, 503, 504]);
+
+function retryableProviderStatus(message) {
+  const m = /\((\d{3})\)/.exec(message || '');
+  return m ? PROVIDER_RETRYABLE_STATUS.has(Number(m[1])) : false;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function buildChatSystemPrompt(readOnlyCatalog) {
   return [
     'You are Sentinel, an AI infrastructure engineer with read-only access to a single monitored host.',
@@ -52,6 +91,37 @@ function buildChatSystemPrompt(readOnlyCatalog) {
     'That opens a normal incident, which is diagnosed and then waits for the operator to approve a fix.',
     'Only suggest one when something is genuinely wrong right now — not for a healthy system.'
   ].join('\n');
+}
+
+/**
+ * Call the provider, retrying a bounded number of times when the
+ * failure's HTTP status suggests it's transient rather than a real
+ * config problem (see PROVIDER_RETRY_ATTEMPTS above for why and when).
+ * Every attempt — success or failure — is recorded to ai_runs, so the
+ * audit trail shows exactly what happened rather than only the final
+ * outcome.
+ */
+async function callProviderWithRetry(adapter, chatArgs, { provider, model, step, question }) {
+  let lastErr;
+  for (let sub = 0; sub <= PROVIDER_RETRY_ATTEMPTS; sub++) {
+    const startedAt = Date.now();
+    try {
+      return await adapter.chat(chatArgs);
+    } catch (err) {
+      lastErr = err;
+      recordAiRun({
+        incidentId: null, purpose: 'chat', provider, model, attempt: step,
+        requestSummary: question, rawResponse: null, parsedJson: null,
+        error: err.message, usage: null, latencyMs: Date.now() - startedAt
+      });
+      if (sub < PROVIDER_RETRY_ATTEMPTS && retryableProviderStatus(err.message)) {
+        await sleep(PROVIDER_RETRY_DELAY_MS);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 /** Prior turns, in the alternating shape every adapter expects. */
@@ -107,18 +177,16 @@ async function runChat({ question, history = [], onEvent = () => {} }) {
     const startedAt = Date.now();
     let result;
     try {
-      result = await adapter.chat({
+      result = await callProviderWithRetry(adapter, {
         system, messages,
         responseSchema: CHAT_STEP_SCHEMA,
         apiKey, model: config.model, baseUrl: config.baseUrl
-      });
+      }, { provider: config.provider, model: config.model, step, question });
     } catch (err) {
-      recordAiRun({
-        incidentId: null, purpose: 'chat', provider: config.provider, model: config.model,
-        attempt: step, requestSummary: question, rawResponse: null, parsedJson: null,
-        error: err.message, usage: null, latencyMs: Date.now() - startedAt
-      });
-      throw err; // a provider-level failure is the operator's problem to see, not something to retry silently
+      // Every attempt (including the retries) already got its own
+      // ai_runs row inside callProviderWithRetry — this is the final,
+      // exhausted failure, genuinely the operator's problem to see.
+      throw err;
     }
 
     let parsed = null;
@@ -216,4 +284,7 @@ function normalizeSuggestion(raw) {
   return { resourceType: String(resourceType), externalId: String(externalId), summary: String(summary || '') };
 }
 
-module.exports = { runChat, buildChatSystemPrompt, normalizeSuggestion, MAX_TOOL_CALLS, MAX_STEPS };
+module.exports = {
+  runChat, buildChatSystemPrompt, normalizeSuggestion, MAX_TOOL_CALLS, MAX_STEPS,
+  retryableProviderStatus, PROVIDER_RETRY_ATTEMPTS, PROVIDER_RETRY_DELAY_MS
+};
