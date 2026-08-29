@@ -75,7 +75,13 @@ async function maybeAutoRemediate(incidentId, actions) {
   const incident = store.getIncident(incidentId);
   const resource = getResource(incident.resource_id);
 
-  for (const action of actions) {
+  // Called from the detector with no `actions` when re-checking an
+  // incident that was already sitting at AWAITING_APPROVAL when the
+  // operator ticked its resource in Settings — the diagnosis (and its
+  // proposed actions) already exist, only the opt-in is new.
+  const candidates = actions ?? store.getActions(incidentId).filter(a => a.status === 'proposed');
+
+  for (const action of candidates) {
     const { allowed, reason } = evaluateAutoRemediation({
       resource, toolName: action.tool_name, realRisk: action.real_risk
     });
@@ -269,4 +275,4 @@ function dismiss(incidentId) {
   return incident;
 }
 
-module.exports = { startInvestigation, rediagnose, approve, dismiss };
+module.exports = { startInvestigation, rediagnose, approve, dismiss, maybeAutoRemediate };

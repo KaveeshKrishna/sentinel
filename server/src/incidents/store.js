@@ -48,6 +48,25 @@ function findStuckInvestigations(olderThanMs) {
   return rows.map(deserializeIncident);
 }
 
+/**
+ * Incidents parked at DIAGNOSED / AWAITING_APPROVAL and untouched for a
+ * while. Two detector uses:
+ *
+ *  - re-check auto-remediation against their already-proposed actions
+ *    (an operator can opt a resource in *after* its incident was raised);
+ *  - re-diagnose a genuinely stale one, so a diagnosis written for a
+ *    problem that has since changed (or resolved) doesn't sit forever
+ *    blocking a fresh incident for that resource via the dedupe rule.
+ */
+function findWaitingIncidents(olderThanMs = 0) {
+  const cutoff = Date.now() - olderThanMs;
+  return getDb().prepare(`
+    SELECT * FROM incidents
+    WHERE status IN ('DIAGNOSED', 'AWAITING_APPROVAL') AND updated_at <= ?
+    ORDER BY id
+  `).all(cutoff).map(deserializeIncident);
+}
+
 /** Backed by the partial unique index on incidents(resource_id) WHERE status NOT IN (terminal). */
 function findOpenIncidentForResource(resourceId) {
   const row = getDb().prepare(`
@@ -181,7 +200,7 @@ function updateActionStatus(id, status, extra = {}) {
 
 module.exports = {
   IllegalTransitionError,
-  findOpenIncidentForResource, findStuckInvestigations, getLastResolvedAt, createIncident, getIncident, listIncidents,
+  findOpenIncidentForResource, findStuckInvestigations, findWaitingIncidents, getLastResolvedAt, createIncident, getIncident, listIncidents,
   deleteIncident, deleteIncidents,
   updateIncidentStatus, recordDiagnosis, recordInvestigationFailure, recordResolution,
   addEvidence, getEvidence,

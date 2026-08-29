@@ -364,3 +364,33 @@ test('auto-remediation never fires for a non-restorative tool, even on an opted-
   assert.equal(result.status, 'AWAITING_APPROVAL');
   setAutoRemediateList([]);
 });
+
+test('maybeAutoRemediate re-checks existing proposed actions when called with no explicit list', async () => {
+  const { setAutoRemediateList } = require('../settings/autoRemediate');
+  let called = null;
+  _setClientForTesting(fakeAgent({
+    callTool: async (name) => { called = name; return { ok: true }; },
+    verifyTool: async () => ({ ok: true })
+  }));
+
+  // An incident already parked at AWAITING_APPROVAL with a restorative
+  // action proposed — as if diagnosed before the operator opted in.
+  const resource = upsertResource({ type: 'service', externalId: 'late-optin-' + crypto.randomUUID(), name: 'caddy' });
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
+  store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+  store.recordDiagnosis(incident.id, { rootCause: 'caddy down', confidence: 0.9 });
+  store.addAction(incident.id, { tool: 'restart_service', params: { service: 'caddy' }, claimedRisk: 'LOW', realRisk: 'MEDIUM_RISK', rationale: 'x' });
+  store.updateIncidentStatus(incident.id, 'AWAITING_APPROVAL');
+
+  // Not opted in yet -> no-op.
+  await engine.maybeAutoRemediate(incident.id);
+  assert.equal(called, null);
+  assert.equal(store.getIncident(incident.id).status, 'AWAITING_APPROVAL');
+
+  // Opt in, re-check -> fires.
+  setAutoRemediateList([`service:${resource.external_id}`]);
+  const result = await engine.maybeAutoRemediate(incident.id);
+  assert.equal(called, 'restart_service');
+  assert.equal(result.status, 'RESOLVED');
+  setAutoRemediateList([]);
+});

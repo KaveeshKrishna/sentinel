@@ -273,3 +273,70 @@ test('checkStuckInvestigations backs off exponentially for an incident with repe
   await new Promise(r => setTimeout(r, 50));
   assert.equal(chatCalls, 1);
 });
+
+test('checkStaleWaitingIncidents re-diagnoses an incident parked past the staleness window', async () => {
+  const { _setClientForTesting, _resetClientForTesting } = require('../agent/client');
+  const { _setProviderForTesting, _resetProviderForTesting } = require('../ai/provider');
+  const { setAIConfig, clearAIConfig } = require('../settings/aiConfig');
+  const store = require('./store');
+  const { upsertResource } = require('../graph/resources');
+  const detector = require('./detector');
+
+  setAIConfig({ provider: 'openai-compatible', model: 'm', baseUrl: '', apiKey: 'k' });
+  _setClientForTesting({
+    listTools: async () => ([{ name: 'start_service', description: 's', risk: 'MEDIUM_RISK', parameters: {} }]),
+    callTool: async () => ({}),
+    verifyTool: async () => ({ ok: true })
+  });
+  let diagnosed = 0;
+  _setProviderForTesting({
+    chat: async () => {
+      diagnosed++;
+      return { text: JSON.stringify({ rootCause: 'still down', recommendedActions: [] }), usage: {} };
+    }
+  });
+
+  const r = upsertResource({ type: 'service', externalId: 'stale-' + crypto.randomUUID(), name: 'caddy' });
+  const incident = store.createIncident({ resourceId: r.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
+  store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+  store.recordDiagnosis(incident.id, { rootCause: 'old wrong diagnosis', confidence: 0.5 });
+  store.addAction(incident.id, { tool: 'start_service', params: {}, claimedRisk: 'LOW', realRisk: 'MEDIUM_RISK', rationale: 'x' });
+  store.updateIncidentStatus(incident.id, 'AWAITING_APPROVAL');
+  // Backdate it well past the staleness window.
+  require('../db/connection').getDb().prepare('UPDATE incidents SET updated_at = ? WHERE id = ?')
+    .run(Date.now() - 60 * 60 * 1000, incident.id);
+
+  await detector.checkStaleWaitingIncidents();
+  await new Promise(r => setTimeout(r, 50)); // rediagnose is fire-and-forget
+
+  assert.equal(diagnosed >= 1, true, 'a stale waiting incident should be re-diagnosed');
+  assert.equal(store.getIncident(incident.id).root_cause, 'still down');
+
+  clearAIConfig();
+  _resetClientForTesting();
+  _resetProviderForTesting();
+});
+
+test('checkStaleWaitingIncidents leaves a freshly-updated incident alone', async () => {
+  const { setAIConfig, clearAIConfig } = require('../settings/aiConfig');
+  const { _setProviderForTesting, _resetProviderForTesting } = require('../ai/provider');
+  const store = require('./store');
+  const { upsertResource } = require('../graph/resources');
+  const detector = require('./detector');
+
+  setAIConfig({ provider: 'openai-compatible', model: 'm', baseUrl: '', apiKey: 'k' });
+  let diagnosed = 0;
+  _setProviderForTesting({ chat: async () => { diagnosed++; return { text: '{}', usage: {} }; } });
+
+  const r = upsertResource({ type: 'service', externalId: 'fresh-' + crypto.randomUUID(), name: 'x' });
+  const incident = store.createIncident({ resourceId: r.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
+  store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+  store.recordDiagnosis(incident.id, { rootCause: 'recent', confidence: 0.5 });
+  store.updateIncidentStatus(incident.id, 'AWAITING_APPROVAL'); // updated_at = now
+
+  await detector.checkStaleWaitingIncidents();
+  assert.equal(diagnosed, 0, 'a recently-updated incident must not be re-diagnosed');
+
+  clearAIConfig();
+  _resetProviderForTesting();
+});

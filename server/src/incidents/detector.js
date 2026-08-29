@@ -6,7 +6,7 @@ const { getDependents } = require('../graph/relationships');
 const { discoverComposeEdges } = require('../graph/discovery');
 const store = require('./store');
 const { isSuppressed } = require('./suppression');
-const { startInvestigation } = require('./engine');
+const { startInvestigation, rediagnose, maybeAutoRemediate } = require('./engine');
 const { logEvent } = require('../activity/logger');
 const { getAIConfig } = require('../settings/aiConfig');
 const { getDetectorConfig } = require('../settings/detectorConfig');
@@ -15,6 +15,7 @@ const { countDiagnosisAttempts } = require('../ai/orchestrator');
 const POLL_MS = 5000; // matches activity/monitor.js's existing docker-event poll cadence
 const STUCK_RETRY_BASE_MS = 30000; // minimum time before the first re-investigation attempt
 const STUCK_RETRY_MAX_MS = 30 * 60000; // backoff cap — a persistently-failing provider (bad key, exhausted quota) is still retried eventually, just not hammered
+const STALE_WAITING_MS = 10 * 60000; // an incident parked at DIAGNOSED/AWAITING_APPROVAL this long gets re-diagnosed against current evidence
 
 // Cooldown, streak windows and CPU/RAM/disk thresholds are no longer
 // constants here — they're operator-tunable via Settings and read fresh
@@ -193,6 +194,53 @@ async function checkStuckInvestigations() {
   }
 }
 
+
+/**
+ * Re-check opt-in auto-remediation for incidents already parked at
+ * AWAITING_APPROVAL. The diagnosis and its proposed actions already
+ * exist — this covers the case where the operator ticks a resource in
+ * Settings *after* its incident was raised (or where a rate-limit
+ * window that had been exceeded has since rolled over). No AI call:
+ * maybeAutoRemediate just re-evaluates the existing proposed actions.
+ */
+async function checkAutoRemediation() {
+  for (const incident of store.findWaitingIncidents()) {
+    if (incident.status !== 'AWAITING_APPROVAL') continue;
+    try {
+      await maybeAutoRemediate(incident.id);
+    } catch (err) {
+      console.error(`[detector] auto-remediation re-check for #${incident.id} failed:`, err.message);
+    }
+  }
+}
+
+/**
+ * Re-diagnose an incident that has sat at DIAGNOSED / AWAITING_APPROVAL,
+ * untouched, past STALE_WAITING_MS.
+ *
+ * This is the escape hatch for the dedupe rule (one open incident per
+ * resource): without it, a diagnosis written for a problem that has
+ * since changed — or a stale incident nobody ever actioned — blocks any
+ * fresh incident for that resource *forever*, because raiseIncident
+ * bails the moment it finds an open one. Re-diagnosis refreshes the
+ * evidence and the recommended actions against the resource's current
+ * state, and (via diagnoseWithEvidence) re-runs auto-remediation.
+ *
+ * Same per-incident exponential backoff as checkStuckInvestigations, so
+ * a genuinely wedged incident isn't re-diagnosed every 10 minutes
+ * indefinitely.
+ */
+async function checkStaleWaitingIncidents() {
+  if (!getAIConfig().configured) return;
+  for (const incident of store.findWaitingIncidents(STALE_WAITING_MS)) {
+    const attempts = countDiagnosisAttempts(incident.id);
+    const backoff = Math.min(STUCK_RETRY_MAX_MS, STALE_WAITING_MS * 2 ** Math.max(0, attempts - 1));
+    if (Date.now() - incident.updated_at < backoff) continue;
+    logEvent('INCIDENT_STALE_REDIAGNOSE', `Incident #${incident.id}: parked ${Math.round((Date.now() - incident.updated_at) / 60000)}m — re-diagnosing`);
+    rediagnose(incident.id).catch(err => console.error(`[detector] stale re-diagnose for #${incident.id} failed:`, err.message));
+  }
+}
+
 async function tick() {
   const agent = getAgentClient();
   const checks = [checkContainerEvents, checkContainerHealth, checkServices, checkSystemMetrics];
@@ -207,6 +255,16 @@ async function tick() {
     await checkStuckInvestigations();
   } catch (err) {
     console.error('[detector] checkStuckInvestigations failed:', err.message);
+  }
+  try {
+    await checkAutoRemediation();
+  } catch (err) {
+    console.error('[detector] checkAutoRemediation failed:', err.message);
+  }
+  try {
+    await checkStaleWaitingIncidents();
+  } catch (err) {
+    console.error('[detector] checkStaleWaitingIncidents failed:', err.message);
   }
 }
 
@@ -231,5 +289,6 @@ function _resetForTesting() {
 module.exports = {
   startIncidentDetection, stopIncidentDetection, tick,
   checkContainerEvents, checkContainerHealth, checkServices, checkSystemMetrics, checkStuckInvestigations,
+  checkAutoRemediation, checkStaleWaitingIncidents,
   _resetForTesting
 };
