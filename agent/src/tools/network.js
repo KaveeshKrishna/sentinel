@@ -161,6 +161,22 @@ function parseCaddyfile(content) {
   return sites;
 }
 
+/**
+ * A site's health is the HTTP probe of its upstream, not whether a
+ * Docker container sits on that port. Sentinel's own domain proxies to
+ * a systemd service; any non-containerised upstream (a bare process, a
+ * remote host) was previously badged "unknown" while serving 200s.
+ * `upstream` records where the response came from; `status` is what the
+ * UI badges.
+ */
+function deriveWebsiteStatus({ port, httpStatus, containerName }) {
+  if (!port) return { status: 'unknown', upstream: 'unknown' };       // e.g. a static-file site, no reverse_proxy
+  if (httpStatus === 0) return { status: 'stopped', upstream: 'down' }; // nothing listening
+  const upstream = containerName ? 'container' : 'host';
+  if (httpStatus >= 500) return { status: 'unhealthy', upstream };      // reachable but erroring
+  return { status: 'running', upstream };
+}
+
 function pingLocal(port) {
   return new Promise((resolve) => {
     const t0 = Date.now();
@@ -220,10 +236,16 @@ module.exports = function registerNetworkTools(registry) {
           }
         }
         const response = site.port ? await pingLocal(site.port) : { time: -1, status: 0 };
+        const { status, upstream } = deriveWebsiteStatus({
+          port: site.port, httpStatus: response.status, containerName
+        });
+
         return {
           domain: site.domain,
           localPort: site.port,
           proxyTarget: site.proxyTarget,
+          status,
+          upstream,
           dockerStatus,
           containerName,
           responseTime: response.time,
@@ -236,3 +258,4 @@ module.exports = function registerNetworkTools(registry) {
 
 module.exports._parseCaddyfile = parseCaddyfile;
 module.exports._readTailLines = readTailLines;
+module.exports._deriveWebsiteStatus = deriveWebsiteStatus;

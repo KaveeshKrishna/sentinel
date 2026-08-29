@@ -145,3 +145,42 @@ test('readTailLines handles an empty file without throwing', async () => {
   assert.equal(lines.length, 0);
   fs.rmSync(p);
 });
+
+// ── website status is the HTTP probe, not container matching ─────────
+const { _deriveWebsiteStatus: deriveWebsiteStatus } = require('./network');
+
+test('a reachable non-container upstream is Running, not Unknown (Sentinel proxies to a systemd service)', () => {
+  assert.deepEqual(
+    deriveWebsiteStatus({ port: 8889, httpStatus: 200, containerName: null }),
+    { status: 'running', upstream: 'host' }
+  );
+});
+
+test('a reachable containerised upstream is Running and tagged as a container', () => {
+  assert.deepEqual(
+    deriveWebsiteStatus({ port: 8082, httpStatus: 200, containerName: 'other-public' }),
+    { status: 'running', upstream: 'container' }
+  );
+});
+
+test('a 3xx from the upstream still counts as Running', () => {
+  assert.equal(deriveWebsiteStatus({ port: 8085, httpStatus: 307, containerName: 'app-web' }).status, 'running');
+});
+
+test('nothing listening on the port is Stopped', () => {
+  assert.deepEqual(
+    deriveWebsiteStatus({ port: 9999, httpStatus: 0, containerName: null }),
+    { status: 'stopped', upstream: 'down' }
+  );
+});
+
+test('a 5xx from the upstream is Unhealthy (reachable but erroring), not Stopped', () => {
+  assert.equal(deriveWebsiteStatus({ port: 8082, httpStatus: 502, containerName: null }).status, 'unhealthy');
+});
+
+test('a site with no reverse_proxy port stays Unknown', () => {
+  assert.deepEqual(
+    deriveWebsiteStatus({ port: null, httpStatus: 0, containerName: null }),
+    { status: 'unknown', upstream: 'unknown' }
+  );
+});

@@ -32,12 +32,14 @@ export default function Websites() {
         <div key={i} id={`site-card-${site.domain}`} className="website-card">
           <div className="website-domain">🌐 {site.domain}</div>
           <div style={{ marginBottom: 10 }}>
-            <StatusBadge status={site.dockerStatus} />
-            {site.containerName && (
-              <span style={{ marginLeft: 8, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                ({site.containerName})
-              </span>
-            )}
+            <StatusBadge status={site.status || site.dockerStatus} />
+            <span style={{ marginLeft: 8, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              {site.containerName
+                ? `(${site.containerName})`
+                : site.upstream === 'host'
+                  ? '(host service)'
+                  : ''}
+            </span>
           </div>
           <div className="website-stats">
             <span className="website-stat">:{site.localPort}</span>
