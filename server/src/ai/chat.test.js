@@ -246,6 +246,31 @@ test('tool output is redacted before it re-enters the conversation', async () =>
   assert.ok(!sentToProvider.includes('sk-ant-abcdefghijklmnop'));
 });
 
+test('prior conversation turns are sent to the provider ahead of the new question', async () => {
+  const { adapter, seen } = scriptedProvider([{ action: 'answer', answer: 'yes, as I said, caddy is fine' }]);
+  _setProviderForTesting(adapter);
+  _setClientForTesting(fakeAgent().client);
+
+  const history = [
+    { role: 'user', content: 'is caddy up?' },
+    { role: 'assistant', content: 'yes, caddy is active' }
+  ];
+  await runChat({ question: 'are you sure?', history });
+
+  const sent = seen[0].messages;
+  assert.deepEqual(sent.map(m => m.content), ['is caddy up?', 'yes, caddy is active', 'are you sure?']);
+  assert.deepEqual(sent.map(m => m.role), ['user', 'assistant', 'user']);
+});
+
+test('an empty history sends only the new question — no phantom prior turns', async () => {
+  const { adapter, seen } = scriptedProvider([{ action: 'answer', answer: 'ok' }]);
+  _setProviderForTesting(adapter);
+  _setClientForTesting(fakeAgent().client);
+
+  await runChat({ question: 'hello' });
+  assert.deepEqual(seen[0].messages, [{ role: 'user', content: 'hello' }]);
+});
+
 test('the system prompt lists only READ_ONLY tools, with their params schemas', async () => {
   const prompt = buildChatSystemPrompt(CATALOG.filter(t => t.risk === 'READ_ONLY'));
   assert.match(prompt, /get_service_status/);
