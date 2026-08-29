@@ -9,6 +9,8 @@ const {
   AUTO_REMEDIABLE_TOOLS, MAX_AUTO_RISK, MAX_AUTO_PER_WINDOW
 } = require('../settings/autoRemediate');
 const { getProvider } = require('../ai/provider');
+const { getNotifyConfig, setNotifyConfig, clearNotifyConfig } = require('../settings/notifyConfig');
+const { sendTestNotification } = require('../notify');
 
 // Detector tuning — cooldown, sustain windows, CPU/RAM/disk thresholds.
 // Defaults and limits ship alongside the values so the UI can render
@@ -53,6 +55,33 @@ router.put('/auto-remediate', (req, res) => {
     });
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// Outbound notifications. Webhook URLs are credentials (anyone holding
+// one can post to the channel), so they are encrypted at rest and only
+// ever returned masked — same treatment as the AI provider key.
+router.get('/notify', (_req, res) => {
+  res.json(getNotifyConfig());
+});
+
+router.put('/notify', (req, res) => {
+  try {
+    res.json(setNotifyConfig(req.body || {}));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/notify', (_req, res) => {
+  res.json(clearNotifyConfig());
+});
+
+router.post('/notify/test', async (_req, res) => {
+  try {
+    res.json({ ok: true, results: await sendTestNotification() });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
   }
 });
 

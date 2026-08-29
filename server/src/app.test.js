@@ -439,6 +439,165 @@ test('POST /api/incidents/:id/report surfaces a generation failure as 502', asyn
   });
 });
 
+// ── One-click approval links ─────────────────────────────────────────
+// The only route that acts without a session cookie, so these cover the
+// boundary rather than just the happy path.
+
+function seedApprovable() {
+  const { signApproveToken } = require('./notify/approveLink');
+  const resource = upsertResource({ type: 'service', externalId: 'link-' + crypto.randomUUID(), name: 'caddy' });
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'service_inactive', triggerSummary: 'inactive' });
+  store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+  store.updateIncidentStatus(incident.id, 'DIAGNOSED');
+  store.updateIncidentStatus(incident.id, 'AWAITING_APPROVAL');
+  const action = store.addAction(incident.id, {
+    tool: 'restart_service', params: { service: 'caddy' },
+    claimedRisk: 'LOW_RISK', realRisk: 'MEDIUM_RISK', rationale: 'it is down'
+  });
+  return { incident, action, token: signApproveToken({ incidentId: incident.id, actionId: action.id }) };
+}
+
+test('GET /a/:token renders a confirm page and executes NOTHING', async () => {
+  // Slack, Discord and mail clients all prefetch links for previews. If
+  // GET approved, the notification itself would fire the remediation.
+  await withServer(async (base) => {
+    const { setNotifyConfig, clearNotifyConfig } = require('./settings/notifyConfig');
+    setNotifyConfig({ baseUrl: 'https://sentinel.example.com' });
+    setNotifyConfig({ approveLinks: true });
+    try {
+      const { incident, action, token } = seedApprovable();
+
+      const res = await fetch(`${base}/a/${token}`);
+      assert.equal(res.status, 200);
+      const html = await res.text();
+      assert.match(html, /Approve this action\?/);
+      assert.match(html, /restart_service/);
+      assert.match(html, /MEDIUM_RISK/);
+
+      // Nothing moved.
+      assert.equal(store.getAction(action.id).status, 'proposed');
+      assert.equal(store.getIncident(incident.id).status, 'AWAITING_APPROVAL');
+    } finally {
+      clearNotifyConfig();
+    }
+  });
+});
+
+test('a tampered or expired approve token is refused with 403', async () => {
+  await withServer(async (base) => {
+    const { setNotifyConfig, clearNotifyConfig } = require('./settings/notifyConfig');
+    const { signApproveToken } = require('./notify/approveLink');
+    setNotifyConfig({ baseUrl: 'https://sentinel.example.com' });
+    setNotifyConfig({ approveLinks: true });
+    try {
+      const { action, token } = seedApprovable();
+
+      for (const bad of [`${token}x`, 'garbage', 'a.b']) {
+        assert.equal((await fetch(`${base}/a/${bad}`)).status, 403);
+        assert.equal((await fetch(`${base}/a/${bad}`, { method: 'POST' })).status, 403);
+      }
+
+      const expired = signApproveToken({ incidentId: 1, actionId: action.id, expiresAt: Date.now() - 1000 });
+      assert.equal((await fetch(`${base}/a/${expired}`, { method: 'POST' })).status, 403);
+      assert.equal(store.getAction(action.id).status, 'proposed');
+    } finally {
+      clearNotifyConfig();
+    }
+  });
+});
+
+test('a valid approve link is refused while the feature is disabled', async () => {
+  await withServer(async (base) => {
+    const { clearNotifyConfig } = require('./settings/notifyConfig');
+    clearNotifyConfig(); // approveLinks defaults to false
+    const { action, token } = seedApprovable();
+
+    assert.equal((await fetch(`${base}/a/${token}`)).status, 403);
+    const post = await fetch(`${base}/a/${token}`, { method: 'POST' });
+    assert.equal(post.status, 403);
+    assert.equal(store.getAction(action.id).status, 'proposed');
+  });
+});
+
+test('POST /a/:token executes once and is inert on replay', async () => {
+  await withServer(async (base) => {
+    const { setNotifyConfig, clearNotifyConfig } = require('./settings/notifyConfig');
+    setNotifyConfig({ baseUrl: 'https://sentinel.example.com' });
+    setNotifyConfig({ approveLinks: true });
+
+    const calls = [];
+    _setClientForTesting({
+      listTools: async () => [{ name: 'restart_service', risk: 'MEDIUM_RISK', description: '', parameters: {}, hasVerify: true }],
+      callTool: async (name, params, opts) => { calls.push({ name, params, opts }); return { ok: true }; },
+      verifyTool: async () => ({ ok: true, active: true })
+    });
+
+    try {
+      const { incident, action, token } = seedApprovable();
+
+      const res = await fetch(`${base}/a/${token}`, { method: 'POST' });
+      assert.equal(res.status, 200);
+      assert.match(await res.text(), /Fixed and verified|Action approved/);
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].name, 'restart_service');
+      assert.equal(calls[0].opts.approved, true);
+
+      const executed = store.getAction(action.id);
+      assert.equal(executed.status, 'executed');
+      // A link approval is a human approval with no user id — it must
+      // stay distinguishable from a machine one for the rate limit.
+      assert.equal(executed.approved_via, 'link');
+      assert.equal(executed.approved_by, null);
+      assert.equal(store.getIncident(incident.id).status, 'RESOLVED');
+
+      // Single-use by construction: the action is no longer 'proposed'.
+      const replay = await fetch(`${base}/a/${token}`, { method: 'POST' });
+      assert.equal(replay.status, 409);
+      assert.match(await replay.text(), /Already handled/);
+      assert.equal(calls.length, 1, 'a replayed link must not run the tool again');
+    } finally {
+      _resetClientForTesting();
+      clearNotifyConfig();
+    }
+  });
+});
+
+test('GET/PUT/DELETE /api/settings/notify never echo a webhook URL back', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const headers = { ...auth, 'Content-Type': 'application/json' };
+    const url = 'https://hooks.slack.com/services/T1/B1/secretpart';
+
+    const put = await fetch(`${base}/api/settings/notify`, {
+      method: 'PUT', headers, body: JSON.stringify({ slackUrl: url, baseUrl: 'https://sentinel.example.com' })
+    });
+    assert.equal(put.status, 200);
+    const saved = await put.text();
+    assert.ok(!saved.includes('secretpart'), 'the raw webhook URL must never reach the client');
+    assert.match(saved, /hooks\.slack\.com/);
+
+    const got = await (await fetch(`${base}/api/settings/notify`, { headers: auth })).json();
+    assert.equal(got.channels.slack.configured, true);
+
+    const bad = await fetch(`${base}/api/settings/notify`, {
+      method: 'PUT', headers, body: JSON.stringify({ slackUrl: 'http://nope.example.com' })
+    });
+    assert.equal(bad.status, 400);
+
+    assert.equal((await fetch(`${base}/api/settings/notify`, { method: 'DELETE', headers: auth })).status, 200);
+  });
+});
+
+test('POST /api/settings/notify/test reports that nothing is configured', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const res = await fetch(`${base}/api/settings/notify/test`, { method: 'POST', headers: auth });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /No notification channel/);
+  });
+});
+
 test('chat session routes list, read and delete conversations', async () => {
   await withServer(async (base) => {
     const auth = await loginAndGetAuthHeader(base);

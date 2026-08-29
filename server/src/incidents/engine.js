@@ -12,6 +12,7 @@ const { redact } = require('../ai/redact');
 const { summarizeToolResult } = require('../ai/summarize');
 const { generateReport } = require('../ai/report');
 const { getAIConfig } = require('../settings/aiConfig');
+const { notifyIncident } = require('../notify');
 const { evaluateAutoRemediation, canonicalRemediation } = require('../settings/autoRemediate');
 const { getAgentClient } = require('../agent/client');
 
@@ -41,7 +42,12 @@ async function diagnoseWithEvidence(incidentId, evidenceRows) {
 
   const added = diagnosisResult.diagnosis.actions.map(action => store.addAction(incidentId, action));
 
-  if (added.length > 0) store.updateIncidentStatus(incidentId, 'AWAITING_APPROVAL');
+  if (added.length > 0) {
+    store.updateIncidentStatus(incidentId, 'AWAITING_APPROVAL');
+    // The one notification that carries a one-click approve button: the
+    // first proposed action is what a human is being asked to decide on.
+    notifyIncident('INCIDENT_AWAITING_APPROVAL', incidentId, { action: added[0] });
+  }
   // Even with zero proposed actions, an opted-in resource with a
   // deterministic trigger still gets its canonical remediation.
   return maybeAutoRemediate(incidentId, added);
@@ -114,6 +120,7 @@ async function maybeAutoRemediate(incidentId, actions) {
 function runAutoAction(incidentId, action, reason) {
   logEvent('INCIDENT_AUTO_REMEDIATE',
     `Incident #${incidentId}: auto-approving ${action.tool_name} — ${reason}`);
+  notifyIncident('INCIDENT_AUTO_REMEDIATE', incidentId, { action });
   // userId stays null AND approved_via is 'auto'. The latter is what the
   // rate-limit query actually counts now — a one-click approval from a
   // notification also has no user id, and must not consume the
@@ -291,6 +298,7 @@ async function runRemediationAction(incidentId, action, userId, verifyOpts, via 
     store.updateActionStatus(actionId, 'failed', { executed_at: Date.now(), error: err.message });
     store.recordResolution(incidentId, 'FAILED');
     logEvent('INCIDENT_FAILED', `Incident #${incidentId}: execution of ${action.tool_name} failed: ${err.message}`);
+    notifyIncident('INCIDENT_FAILED', incidentId, { action });
     writePostIncidentReport(incidentId);
     return store.getIncident(incidentId);
   }
@@ -304,9 +312,11 @@ async function runRemediationAction(incidentId, action, userId, verifyOpts, via 
   if (verifyResult.ok) {
     store.recordResolution(incidentId, 'RESOLVED');
     logEvent('INCIDENT_RESOLVED', `Incident #${incidentId} resolved`);
+    notifyIncident('INCIDENT_RESOLVED', incidentId, { action });
   } else {
     store.recordResolution(incidentId, 'FAILED');
     logEvent('INCIDENT_FAILED', `Incident #${incidentId}: action executed but verification never converged`);
+    notifyIncident('INCIDENT_FAILED', incidentId, { action });
   }
 
   writePostIncidentReport(incidentId);

@@ -8,6 +8,7 @@ const store = require('./store');
 const { isSuppressed } = require('./suppression');
 const { startInvestigation, rediagnose, maybeAutoRemediate } = require('./engine');
 const { logEvent } = require('../activity/logger');
+const { notifyIncident } = require('../notify');
 const { getAIConfig } = require('../settings/aiConfig');
 const { getDetectorConfig } = require('../settings/detectorConfig');
 const { countDiagnosisAttempts } = require('../ai/orchestrator');
@@ -48,6 +49,7 @@ async function raiseIncident({ resourceRef, severity, triggerRule, triggerSummar
 
   const incident = store.createIncident({ resourceId: resource.id, severity, triggerRule, triggerSummary });
   logEvent('INCIDENT_DETECTED', `Incident #${incident.id}: ${triggerSummary}`);
+  notifyIncident('INCIDENT_DETECTED', incident.id);
 
   // Fire-and-forget — the detector tick must not block on a full
   // diagnosis round trip; failures are handled inside startInvestigation

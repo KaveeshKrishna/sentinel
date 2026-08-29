@@ -23,6 +23,7 @@ const settingsRoutes     = require('./routes/settings');
 const toolsRoutes        = require('./routes/tools');
 const resourcesRoutes    = require('./routes/resources');
 const chatRoutes         = require('./routes/chat');
+const approveRoutes      = require('./routes/approve');
 
 /**
  * Build the Express app. Split out from server.js (which additionally
@@ -62,6 +63,12 @@ function createApp() {
   app.use('/api/auth', authRoutes);
   app.use('/api/setup', setupRoutes.router);
   app.get('/setup', setupRoutes.setupPageHandler);
+  // One-click approval from a notification. Public by necessity (it is
+  // opened from a phone, outside any session) but authenticated by an
+  // HMAC-signed, short-lived, single-action token — and GET only ever
+  // renders a confirm page, so a link preview cannot approve anything.
+  // See routes/approve.js and notify/approveLink.js.
+  app.use('/a', approveRoutes);
 
   // ── Protected API routes ─────────────────────────────────────────────────
   app.use('/api/system',      authMiddleware, systemRoutes);
