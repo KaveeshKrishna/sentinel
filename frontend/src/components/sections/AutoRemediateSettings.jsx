@@ -62,7 +62,9 @@ export default function AutoRemediateSettings() {
       <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: 4 }}>
         Normally every AI-recommended action waits for you to click approve. For the resources ticked
         below, Sentinel will run a <strong>restorative</strong> action by itself — start or restart —
-        then verify it worked, exactly as if you had approved it.
+        then verify it worked, exactly as if you had approved it. If a service goes inactive or a
+        container exits and the AI diagnosis proposes no restart, Sentinel restarts it anyway — for
+        these triggers, "it stopped, so start it" isn't a judgement call.
       </p>
       <p style={{ fontSize: '0.76rem', color: 'var(--text-dim)', marginBottom: 12 }}>
         Limits, enforced in code and not settable here: only {policy.allowedTools.join(', ')}; nothing above{' '}

@@ -132,7 +132,36 @@ function evaluateAutoRemediation({ resource, toolName, realRisk }) {
   return { allowed: true, reason: `auto-remediation enabled for ${resourceKey(resource.type, resource.external_id)}` };
 }
 
+/**
+ * The canonical restorative action for a deterministic "it isn't
+ * running" trigger. `service_inactive` / `container_exit` /
+ * `container_unhealthy` / `container_oom` are ground-truth signals from
+ * systemd and Docker, not AI judgement — "restart it" is the obvious
+ * response and does not depend on the model having proposed it. Used as
+ * a fallback in maybeAutoRemediate when the diagnosis recommends no
+ * restorative action (a weaker model often just recommends looking at
+ * the logs). Still gated by every check in evaluateAutoRemediation —
+ * opt-in, the tool allowlist, the risk ceiling, the rate limit.
+ *
+ * Deliberately absent: sustained_cpu / sustained_ram / disk_usage —
+ * a restart is not a fix for those and there is no single obvious action.
+ *
+ * @returns {{tool: string, params: object}|null}
+ */
+const CANONICAL_REMEDIATION = {
+  service_inactive: (r) => r.type === 'service' ? { tool: 'restart_service', params: { service: r.external_id } } : null,
+  container_exit: (r) => r.type === 'container' ? { tool: 'restart_container', params: { id: r.external_id } } : null,
+  container_unhealthy: (r) => r.type === 'container' ? { tool: 'restart_container', params: { id: r.external_id } } : null,
+  container_oom: (r) => r.type === 'container' ? { tool: 'restart_container', params: { id: r.external_id } } : null
+};
+
+function canonicalRemediation(triggerRule, resource) {
+  const fn = CANONICAL_REMEDIATION[triggerRule];
+  return fn && resource ? fn(resource) : null;
+}
+
 module.exports = {
+  canonicalRemediation,
   AUTO_REMEDIABLE_TOOLS, MAX_AUTO_RISK, MAX_AUTO_PER_WINDOW, RATE_WINDOW_MS,
   resourceKey, getAutoRemediateList, setAutoRemediateList, isResourceEnabled,
   isToolAutoRemediable, countRecentAutoRemediations, evaluateAutoRemediation

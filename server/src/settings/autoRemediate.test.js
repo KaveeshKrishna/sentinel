@@ -134,3 +134,23 @@ test('a malformed resource key is rejected rather than stored', () => {
 test('duplicate keys are de-duplicated on save', () => {
   assert.deepEqual(setAutoRemediateList(['service:caddy', 'service:caddy']), ['service:caddy']);
 });
+
+test('canonicalRemediation maps deterministic "not running" triggers to a restart', () => {
+  const { canonicalRemediation } = require('./autoRemediate');
+  const svc = { type: 'service', external_id: 'caddy' };
+  const ctr = { type: 'container', external_id: 'app-api' };
+
+  assert.deepEqual(canonicalRemediation('service_inactive', svc), { tool: 'restart_service', params: { service: 'caddy' } });
+  assert.deepEqual(canonicalRemediation('container_exit', ctr), { tool: 'restart_container', params: { id: 'app-api' } });
+  assert.deepEqual(canonicalRemediation('container_unhealthy', ctr), { tool: 'restart_container', params: { id: 'app-api' } });
+  assert.deepEqual(canonicalRemediation('container_oom', ctr), { tool: 'restart_container', params: { id: 'app-api' } });
+});
+
+test('canonicalRemediation returns null for triggers a restart does not fix', () => {
+  const { canonicalRemediation } = require('./autoRemediate');
+  const host = { type: 'host', external_id: 'localhost' };
+  assert.equal(canonicalRemediation('sustained_cpu', host), null);
+  assert.equal(canonicalRemediation('sustained_ram', host), null);
+  assert.equal(canonicalRemediation('disk_usage', host), null);
+  assert.equal(canonicalRemediation('service_inactive', { type: 'container', external_id: 'x' }), null); // type mismatch
+});

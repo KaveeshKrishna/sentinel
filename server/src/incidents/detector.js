@@ -205,7 +205,9 @@ async function checkStuckInvestigations() {
  */
 async function checkAutoRemediation() {
   for (const incident of store.findWaitingIncidents()) {
-    if (incident.status !== 'AWAITING_APPROVAL') continue;
+    // Both DIAGNOSED (zero AI actions) and AWAITING_APPROVAL are worth a
+    // re-check — an opted-in resource with a deterministic trigger gets
+    // its canonical remediation from either state.
     try {
       await maybeAutoRemediate(incident.id);
     } catch (err) {

@@ -31,7 +31,13 @@ function buildSystemPrompt(toolCatalog) {
     '',
     'Ground your rootCause and recommendedActions strictly in the evidence provided. Never invent',
     'evidence. If you are not confident an action will help, leave recommendedActions empty and',
-    'explain why in rootCause instead.'
+    'explain why in rootCause instead.',
+    '',
+    'When the evidence shows a service is inactive/failed or a container has exited or is unhealthy,',
+    'and nothing in the evidence points to a crash loop, a bad config, or a failing dependency, the',
+    'remediation is to restart it: recommend restart_service (for a service) or restart_container',
+    '(for a container) as the first action. Only fall back to a read-only investigation tool when the',
+    'evidence genuinely does not say why it stopped.'
   ].join('\n');
 }
 

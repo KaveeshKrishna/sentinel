@@ -9,7 +9,8 @@ const { verifyAction } = require('../verify/engine');
 const { logEvent } = require('../activity/logger');
 const { getResource } = require('../graph/resources');
 const { redact } = require('../ai/redact');
-const { evaluateAutoRemediation } = require('../settings/autoRemediate');
+const { evaluateAutoRemediation, canonicalRemediation } = require('../settings/autoRemediate');
+const { getAgentClient } = require('../agent/client');
 
 /** Evidence summary for an approved investigation action's output. */
 const INVESTIGATION_SUMMARY_LIMIT = 4000;
@@ -51,10 +52,9 @@ async function diagnoseWithEvidence(incidentId, evidenceRows) {
 
   const added = diagnosisResult.diagnosis.actions.map(action => store.addAction(incidentId, action));
 
-  if (added.length === 0) return store.getIncident(incidentId); // stays DIAGNOSED
-
-  store.updateIncidentStatus(incidentId, 'AWAITING_APPROVAL');
-
+  if (added.length > 0) store.updateIncidentStatus(incidentId, 'AWAITING_APPROVAL');
+  // Even with zero proposed actions, an opted-in resource with a
+  // deterministic trigger still gets its canonical remediation.
   return maybeAutoRemediate(incidentId, added);
 }
 
@@ -74,6 +74,7 @@ async function diagnoseWithEvidence(incidentId, evidenceRows) {
 async function maybeAutoRemediate(incidentId, actions) {
   const incident = store.getIncident(incidentId);
   const resource = getResource(incident.resource_id);
+  if (!resource) return incident;
 
   // Called from the detector with no `actions` when re-checking an
   // incident that was already sitting at AWAITING_APPROVAL when the
@@ -81,20 +82,52 @@ async function maybeAutoRemediate(incidentId, actions) {
   // proposed actions) already exist, only the opt-in is new.
   const candidates = actions ?? store.getActions(incidentId).filter(a => a.status === 'proposed');
 
+  // 1. Prefer an AI-proposed action that clears every gate.
   for (const action of candidates) {
     const { allowed, reason } = evaluateAutoRemediation({
       resource, toolName: action.tool_name, realRisk: action.real_risk
     });
     if (!allowed) continue;
-
-    logEvent('INCIDENT_AUTO_REMEDIATE',
-      `Incident #${incidentId}: auto-approving ${action.tool_name} — ${reason}`);
-    // userId stays null: that's what marks the row as machine-approved,
-    // both in the audit trail and for the rate-limit query.
-    return runRemediationAction(incidentId, action, null, {});
+    return runAutoAction(incidentId, action, reason);
   }
 
-  return incident;
+  // 2. Fallback: the trigger is deterministic ground truth. A
+  //    `service_inactive` incident means the service is not running —
+  //    "restart it" doesn't need the model to have said so, and a
+  //    weaker model routinely proposes only "look at the logs". Still
+  //    every gate in evaluateAutoRemediation applies (opt-in, the tool
+  //    allowlist, the risk ceiling, the rate limit).
+  const canonical = canonicalRemediation(incident.trigger_rule, resource);
+  if (!canonical) return incident;
+  if (candidates.some(a => a.tool_name === canonical.tool)) return incident; // already tried above and refused (e.g. rate limit)
+
+  let realRisk;
+  try {
+    const catalog = await getAgentClient().listTools();
+    realRisk = catalog.find(t => t.name === canonical.tool)?.risk;
+  } catch (err) {
+    console.error(`[engine] could not resolve risk for canonical ${canonical.tool}:`, err.message);
+    return incident;
+  }
+  if (!realRisk) return incident;
+
+  const { allowed, reason } = evaluateAutoRemediation({ resource, toolName: canonical.tool, realRisk });
+  if (!allowed) return incident;
+
+  if (incident.status === 'DIAGNOSED') store.updateIncidentStatus(incidentId, 'AWAITING_APPROVAL');
+  const action = store.addAction(incidentId, {
+    tool: canonical.tool, params: canonical.params, claimedRisk: null, realRisk,
+    rationale: `Canonical remediation for a ${incident.trigger_rule} incident — the AI diagnosis proposed no restorative action, so Sentinel derived one from the trigger.`
+  });
+  return runAutoAction(incidentId, action, `canonical: ${reason}`);
+}
+
+function runAutoAction(incidentId, action, reason) {
+  logEvent('INCIDENT_AUTO_REMEDIATE',
+    `Incident #${incidentId}: auto-approving ${action.tool_name} — ${reason}`);
+  // userId stays null: that's what marks the row as machine-approved,
+  // both in the audit trail and for the rate-limit query.
+  return runRemediationAction(incidentId, action, null, {});
 }
 
 /** DETECTED -> INVESTIGATING: gather evidence, then diagnose against it. */

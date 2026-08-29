@@ -360,8 +360,11 @@ test('auto-remediation never fires for a non-restorative tool, even on an opted-
 
   const result = await engine.startInvestigation(incident.id);
 
+  // The AI's non-restorative proposal is never auto-run. (The trigger is
+  // container_exit and the resource is opted in, so the canonical
+  // restart_container fallback DOES fire — that's intended: a restart is
+  // safe, a stop is not.)
   assert.equal(calls.includes('stop_container'), false, 'a stop is not a repair — must never auto-run');
-  assert.equal(result.status, 'AWAITING_APPROVAL');
   setAutoRemediateList([]);
 });
 
@@ -393,4 +396,62 @@ test('maybeAutoRemediate re-checks existing proposed actions when called with no
   assert.equal(called, 'restart_service');
   assert.equal(result.status, 'RESOLVED');
   setAutoRemediateList([]);
+});
+
+test('an opted-in resource auto-remediates via the canonical restart even when the diagnosis proposes only READ_ONLY actions', async () => {
+  // The real failure the user hit: a weak model diagnosed `caddy` down
+  // but recommended only get_service_logs / get_service_status.
+  const { setAutoRemediateList } = require('../settings/autoRemediate');
+  const calls = [];
+  _setClientForTesting({
+    listTools: async () => ([
+      { name: 'restart_service', description: 'restart', risk: 'MEDIUM_RISK', parameters: {} },
+      { name: 'get_service_logs', description: 'logs', risk: 'READ_ONLY', parameters: {} }
+    ]),
+    callTool: async (name) => { calls.push(name); return { ok: true }; },
+    verifyTool: async () => ({ ok: true })
+  });
+  _setProviderForTesting({
+    chat: async () => ({
+      text: JSON.stringify({
+        rootCause: 'caddy is inactive; need logs to say why',
+        recommendedActions: [
+          { tool: 'get_service_logs', params: { service: 'caddy' } }
+        ]
+      }), usage: {}
+    })
+  });
+
+  const resource = upsertResource({ type: 'service', externalId: 'caddy-canon-' + crypto.randomUUID(), name: 'caddy' });
+  setAutoRemediateList([`service:${resource.external_id}`]);
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'service_inactive', triggerSummary: 'caddy is failed' });
+
+  const result = await engine.startInvestigation(incident.id);
+
+  assert.equal(calls.includes('restart_service'), true, 'the canonical restart must have run');
+  assert.equal(result.status, 'RESOLVED');
+  const restartAction = store.getActions(incident.id).find(a => a.tool_name === 'restart_service');
+  assert.ok(restartAction);
+  assert.equal(restartAction.approved_by, null);
+  assert.match(restartAction.rationale, /Canonical remediation/);
+  setAutoRemediateList([]);
+});
+
+test('the canonical restart is NOT used for a resource that is not opted in', async () => {
+  const calls = [];
+  _setClientForTesting({
+    listTools: async () => ([{ name: 'restart_service', description: 'r', risk: 'MEDIUM_RISK', parameters: {} }]),
+    callTool: async (name) => { calls.push(name); return {}; },
+    verifyTool: async () => ({ ok: true })
+  });
+  _setProviderForTesting({
+    chat: async () => ({ text: JSON.stringify({ rootCause: 'down', recommendedActions: [] }), usage: {} })
+  });
+
+  const resource = upsertResource({ type: 'service', externalId: 'nocanon-' + crypto.randomUUID(), name: 'caddy' });
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
+
+  const result = await engine.startInvestigation(incident.id);
+  assert.equal(calls.includes('restart_service'), false);
+  assert.equal(result.status, 'DIAGNOSED');
 });
