@@ -392,6 +392,103 @@ test('GET /api/incidents/:id/timeline returns ordered entries and a five-stage r
   });
 });
 
+test('chat session routes list, read and delete conversations', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const chatStore = require('./ai/chatStore');
+    const session = chatStore.createSession('why is cpu high?');
+    chatStore.addMessage(session.id, { role: 'user', content: 'why is cpu high?' });
+    chatStore.addMessage(session.id, {
+      role: 'assistant', content: 'node is busy',
+      toolCalls: { calls: [{ tool: 'get_system_metrics', ok: true, summary: '{}' }], suggestedIncident: null }
+    });
+
+    const list = await (await fetch(`${base}/api/chat/sessions`, { headers: auth })).json();
+    assert.ok(list.some(s => s.id === session.id));
+
+    const detail = await (await fetch(`${base}/api/chat/sessions/${session.id}`, { headers: auth })).json();
+    assert.equal(detail.messages.length, 2);
+    assert.equal(detail.messages[1].toolCalls.calls[0].tool, 'get_system_metrics');
+
+    const del = await fetch(`${base}/api/chat/sessions/${session.id}`, { method: 'DELETE', headers: auth });
+    assert.equal(del.status, 200);
+    const gone = await fetch(`${base}/api/chat/sessions/${session.id}`, { headers: auth });
+    assert.equal(gone.status, 404);
+  });
+});
+
+test('POST /api/chat rejects an empty message before touching the AI', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const res = await fetch(`${base}/api/chat`, {
+      method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ message: '   ' })
+    });
+    assert.equal(res.status, 400);
+  });
+});
+
+test('POST /api/chat streams an error event rather than failing the request when no provider is configured', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const res = await fetch(`${base}/api/chat`, {
+      method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'is caddy up?' })
+    });
+    // The response is committed as a 200 SSE stream before the turn runs,
+    // so a mid-turn failure has to arrive as an event, not a status code.
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /"type":"session"/);
+    assert.match(body, /"type":"error"/);
+    assert.match(body, /No AI provider configured/);
+  });
+});
+
+test('POST /api/chat/escalate opens a real incident and dedupes against an open one', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const externalId = 'chat-escalate-' + crypto.randomUUID();
+
+    const res = await fetch(`${base}/api/chat/escalate`, {
+      method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resourceType: 'service', externalId, summary: 'looks down' })
+    });
+    assert.equal(res.status, 200);
+    const { incidentId, existing } = await res.json();
+    assert.equal(existing, false);
+
+    const incident = store.getIncident(incidentId);
+    assert.equal(incident.trigger_rule, 'user_reported');
+    assert.match(incident.trigger_summary, /looks down/);
+
+    // Same resource again while the first is still open -> same incident,
+    // matching the detector's own one-open-incident-per-resource rule.
+    const again = await (await fetch(`${base}/api/chat/escalate`, {
+      method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resourceType: 'service', externalId, summary: 'still down' })
+    })).json();
+    assert.equal(again.incidentId, incidentId);
+    assert.equal(again.existing, true);
+  });
+});
+
+test('POST /api/chat/escalate rejects a missing or unknown resourceType', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const headers = { ...auth, 'Content-Type': 'application/json' };
+
+    const missing = await fetch(`${base}/api/chat/escalate`, {
+      method: 'POST', headers, body: JSON.stringify({ externalId: 'x' })
+    });
+    assert.equal(missing.status, 400);
+
+    const unknown = await fetch(`${base}/api/chat/escalate`, {
+      method: 'POST', headers, body: JSON.stringify({ resourceType: 'kubernetes', externalId: 'x' })
+    });
+    assert.equal(unknown.status, 400);
+  });
+});
+
 test('incident routes 404 for an unknown id', async () => {
   await withServer(async (base) => {
     const auth = await loginAndGetAuthHeader(base);

@@ -9,22 +9,9 @@ const { verifyAction } = require('../verify/engine');
 const { logEvent } = require('../activity/logger');
 const { getResource } = require('../graph/resources');
 const { redact } = require('../ai/redact');
+const { summarizeToolResult } = require('../ai/summarize');
 const { evaluateAutoRemediation, canonicalRemediation } = require('../settings/autoRemediate');
 const { getAgentClient } = require('../agent/client');
-
-/** Evidence summary for an approved investigation action's output. */
-const INVESTIGATION_SUMMARY_LIMIT = 4000;
-
-function summarizeToolResult(toolName, result) {
-  if (result == null) return `${toolName}: (no output)`;
-  // Log tools return arrays of {stream, text} or plain strings.
-  const text = Array.isArray(result)
-    ? result.map(l => (typeof l === 'string' ? l : `[${l.stream}] ${l.text}`)).join('\n')
-    : JSON.stringify(result);
-  return text.length > INVESTIGATION_SUMMARY_LIMIT
-    ? `${text.slice(0, INVESTIGATION_SUMMARY_LIMIT)}\n… (truncated)`
-    : text;
-}
 
 /**
  * Ask the AI for a diagnosis against `evidenceRows` and apply the

@@ -22,6 +22,7 @@ const incidentsRoutes    = require('./routes/incidents');
 const settingsRoutes     = require('./routes/settings');
 const toolsRoutes        = require('./routes/tools');
 const resourcesRoutes    = require('./routes/resources');
+const chatRoutes         = require('./routes/chat');
 
 /**
  * Build the Express app. Split out from server.js (which additionally
@@ -75,6 +76,7 @@ function createApp() {
   app.use('/api/settings',    authMiddleware, settingsRoutes);
   app.use('/api/tools',       authMiddleware, toolsRoutes);
   app.use('/api/resources',   authMiddleware, resourcesRoutes);
+  app.use('/api/chat',        authMiddleware, chatRoutes);
 
   // ── Frontend static files ────────────────────────────────────────────────
   const frontendDist = path.join(__dirname, '../public');

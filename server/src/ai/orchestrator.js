@@ -6,16 +6,31 @@ const { getProvider } = require('./provider');
 const { getAIConfig, getDecryptedAPIKey } = require('../settings/aiConfig');
 const { validate } = require('./schema');
 const { redact } = require('./redact');
+const { recordAiRun } = require('./runs');
 
 const MAX_ATTEMPTS = 2;
 
-function buildSystemPrompt(toolCatalog) {
-  const toolList = toolCatalog
+/**
+ * Render the agent's live tool catalog for a system prompt.
+ *
+ * The params JSON Schema is included deliberately, not just the name and
+ * description: without it the model guesses the params shape and the
+ * agent's strict validation rejects every recommended action with
+ * `400 Invalid parameters` (found during the Phase 5 cutover rehearsal).
+ * Shared with the chat orchestrator, which renders the same catalog
+ * filtered to READ_ONLY.
+ */
+function renderToolCatalog(toolCatalog) {
+  return toolCatalog
     .map(t => {
       const schema = JSON.stringify(t.parameters || { type: 'object', properties: {} });
       return `- ${t.name} (risk: ${t.risk}): ${t.description}\n    params schema: ${schema}`;
     })
     .join('\n');
+}
+
+function buildSystemPrompt(toolCatalog) {
+  const toolList = renderToolCatalog(toolCatalog);
 
   return [
     'You are Sentinel, an AI infrastructure engineer diagnosing a single incident.',
@@ -52,21 +67,6 @@ function buildUserMessage(incident, evidence) {
     lines.push(`- [${e.source_tool}] ${redact(e.summary)}`);
   }
   return lines.join('\n');
-}
-
-function recordAiRun({ incidentId, purpose, provider, model, attempt, requestSummary, rawResponse, parsedJson, error, usage, latencyMs }) {
-  getDb().prepare(`
-    INSERT INTO ai_runs (incident_id, purpose, provider, model, attempt, request_summary, raw_response,
-                          parsed_json, error, prompt_tokens, completion_tokens, latency_ms, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    incidentId ?? null, purpose, provider, model, attempt,
-    requestSummary ? redact(requestSummary) : null,
-    rawResponse ? redact(rawResponse) : null,
-    parsedJson ? JSON.stringify(parsedJson) : null,
-    error || null,
-    usage?.promptTokens ?? null, usage?.completionTokens ?? null, latencyMs, Date.now()
-  );
 }
 
 /**
@@ -200,4 +200,7 @@ function countDiagnosisAttempts(incidentId) {
   return row.c;
 }
 
-module.exports = { runDiagnosis, reconcileActions, buildSystemPrompt, buildUserMessage, countDiagnosisAttempts };
+module.exports = {
+  runDiagnosis, reconcileActions, buildSystemPrompt, buildUserMessage,
+  countDiagnosisAttempts, renderToolCatalog
+};

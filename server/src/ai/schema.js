@@ -62,14 +62,87 @@ const DIAGNOSIS_SCHEMA = {
   additionalProperties: true
 };
 
-const validateFn = ajv.compile(DIAGNOSIS_SCHEMA);
+/**
+ * One step of the "Ask Sentinel" conversational loop. The model either
+ * asks to run a tool or gives its final answer; the loop in ai/chat.js
+ * re-prompts with the tool result until it answers or hits its ceiling.
+ *
+ * Same slack as DIAGNOSIS_SCHEMA and for the same reason: only `action`
+ * is required, because the real gates on a tool step are not in this
+ * schema at all. chat.js refuses any `tool` that isn't READ_ONLY in the
+ * agent's live catalog, and calls the agent *unapproved* so its own
+ * isAuthorized() independently rejects anything above READ_ONLY. A step
+ * naming a tool the loop can't run is dropped there, not here.
+ *
+ * `suggestedIncident` is how chat escalates: it never creates or
+ * approves anything itself, it only proposes that the user open a real
+ * incident, which then goes through the ordinary state machine.
+ */
+const CHAT_STEP_SCHEMA = {
+  type: 'object',
+  properties: {
+    thought: { type: 'string' },
+    action: { type: 'string', enum: ['tool', 'answer'] },
+    tool: { type: 'string' },
+    params: { type: 'object' },
+    answer: { type: 'string' },
+    suggestedIncident: {
+      type: 'object',
+      properties: {
+        resourceType: { type: 'string' },
+        externalId: { type: 'string' },
+        summary: { type: 'string' }
+      },
+      additionalProperties: true
+    }
+  },
+  required: ['action'],
+  additionalProperties: true
+};
 
-function validate(json) {
-  const valid = validateFn(json);
-  return {
-    valid,
-    errors: valid ? [] : (validateFn.errors || []).map(e => `${e.instancePath || '(root)'} ${e.message}`)
+/**
+ * The AI-written post-incident report. Structured rather than free-form
+ * markdown on purpose: it stays ajv-validated like every other AI call,
+ * the UI renders React components instead of parsing untrusted markdown
+ * (no HTML-injection surface), and the markdown for the copy button is
+ * derived server-side from these fields.
+ *
+ * Only `summary` and `rootCause` are required — a terse free-tier model
+ * that gets the substance right shouldn't have the whole report thrown
+ * away for omitting `prevention`, the same near-miss that cost two
+ * diagnoses during Phase 5.
+ */
+const REPORT_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    summary: { type: 'string', minLength: 1 },
+    impact: { type: 'string' },
+    rootCause: { type: 'string', minLength: 1 },
+    resolution: { type: 'string' },
+    timeline: { type: 'array', items: { type: 'string' } },
+    prevention: { type: 'array', items: { type: 'string' } }
+  },
+  required: ['summary', 'rootCause'],
+  additionalProperties: true
+};
+
+function compileValidator(schema) {
+  const validateFn = ajv.compile(schema);
+  return (json) => {
+    const valid = validateFn(json);
+    return {
+      valid,
+      errors: valid ? [] : (validateFn.errors || []).map(e => `${e.instancePath || '(root)'} ${e.message}`)
+    };
   };
 }
 
-module.exports = { DIAGNOSIS_SCHEMA, validate };
+const validate = compileValidator(DIAGNOSIS_SCHEMA);
+const validateChatStep = compileValidator(CHAT_STEP_SCHEMA);
+const validateReport = compileValidator(REPORT_SCHEMA);
+
+module.exports = {
+  DIAGNOSIS_SCHEMA, CHAT_STEP_SCHEMA, REPORT_SCHEMA,
+  validate, validateChatStep, validateReport
+};

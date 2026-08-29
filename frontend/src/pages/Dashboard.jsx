@@ -13,6 +13,7 @@ import Deployments from '../components/sections/Deployments';
 import Activity    from '../components/sections/Activity';
 import Recordings  from '../components/sections/Recordings';
 import Incidents   from '../components/sections/Incidents';
+import AskSentinel from '../components/sections/AskSentinel';
 import IncidentDetail from '../components/sections/IncidentDetail';
 import Settings    from '../components/sections/Settings';
 import { useAuth, apiLogout } from '../hooks/useAuth';
@@ -46,6 +47,7 @@ function useOpenIncidentCount() {
 const TABS = [
   { id: 'overview',     label: 'Overview',     icon: 'grid',        group: 'Monitor' },
   { id: 'incidents',    label: 'Incidents',    icon: 'alert',       group: 'Monitor' },
+  { id: 'ask',          label: 'Ask Sentinel',  icon: 'message',    group: 'Monitor' },
   { id: 'hardware',     label: 'Hardware',      icon: 'cpu',        group: 'Monitor' },
   { id: 'docker',       label: 'Docker',        icon: 'box',        group: 'Monitor' },
   { id: 'websites',     label: 'Websites',      icon: 'globe',      group: 'Monitor' },
@@ -61,6 +63,7 @@ const TABS = [
 const TAB_TITLES = {
   overview:    { title: 'System Overview',    subtitle: 'Live system health at a glance' },
   incidents:   { title: 'Incidents',          subtitle: 'AI-detected infrastructure incidents' },
+  ask:         { title: 'Ask Sentinel',       subtitle: 'Ask about this host — answered with live read-only tools' },
   hardware:    { title: 'Hardware',           subtitle: 'CPU, memory, and disk details' },
   docker:      { title: 'Docker',             subtitle: 'Running and stopped containers' },
   websites:    { title: 'Websites',           subtitle: 'Hosted applications status' },
@@ -87,6 +90,7 @@ function NavIcon({ name }) {
     'git-branch':<><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></>,
     clock:<><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
     record:<><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor"/></>,
+    message:<><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></>,
     alert:<><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
     settings:<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></>
   };
@@ -188,6 +192,7 @@ export default function Dashboard() {
             <Route path="overview" element={<Overview />} />
             <Route path="incidents" element={<Incidents />} />
             <Route path="incidents/:id" element={<IncidentDetail />} />
+            <Route path="ask" element={<AskSentinel />} />
             <Route path="hardware" element={<Hardware />} />
             <Route path="docker" element={<DockerSection />} />
             <Route path="websites" element={<Websites />} />
