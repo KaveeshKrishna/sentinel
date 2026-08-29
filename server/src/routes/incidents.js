@@ -6,6 +6,7 @@ const store = require('../incidents/store');
 const engine = require('../incidents/engine');
 const { STATES } = require('../incidents/states');
 const { getTimeline } = require('../incidents/timeline');
+const { generateReport, getReport, renderReportMarkdown } = require('../ai/report');
 const { getResource } = require('../graph/resources');
 
 // Resource id -> {type, name} is cheap (resources are few, unindexed reads
@@ -55,6 +56,30 @@ router.get('/:id/timeline', (req, res) => {
   const incident = store.getIncident(Number(req.params.id));
   if (!incident) return res.status(404).json({ error: 'Incident not found' });
   res.json(getTimeline(incident.id, incident));
+});
+
+// The AI-written post-incident report. Generated automatically when an
+// incident closes; this pair lets the UI read it and regenerate it (for
+// an incident that closed before a provider was configured, or one whose
+// generation failed).
+router.get('/:id/report', (req, res) => {
+  const incident = store.getIncident(Number(req.params.id));
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+
+  const stored = getReport(incident.id);
+  if (!stored) return res.json({ report: null, markdown: null, generatedAt: null });
+  res.json({ ...stored, markdown: renderReportMarkdown(stored.report, incident) });
+});
+
+router.post('/:id/report', async (req, res) => {
+  const incident = store.getIncident(Number(req.params.id));
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+
+  const result = await generateReport(incident.id);
+  if (!result.ok) return res.status(502).json({ error: result.error });
+
+  const stored = getReport(incident.id);
+  res.json({ ...stored, markdown: renderReportMarkdown(stored.report, incident) });
 });
 
 // Bulk delete — filter-aware "Clear" button in the UI. `?status=FAILED`

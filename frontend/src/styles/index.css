@@ -1081,6 +1081,28 @@ code, .mono { font-family: var(--mono); }
 }
 .chat-input-row .form-input { flex: 1; }
 
+/* ── Post-incident report ──────────────────────────── */
+.report { display: flex; flex-direction: column; gap: 14px; }
+.report-title { font-size: 1rem; font-weight: 600; }
+.report-section { display: flex; flex-direction: column; gap: 4px; }
+.report-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.report-text { font-size: 0.86rem; line-height: 1.55; }
+.report-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.report-list li { font-size: 0.82rem; line-height: 1.5; color: var(--text-muted); }
+.report-list li.mono { font-family: var(--mono); font-size: 0.75rem; }
+.report-footer {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
 /* ── Responsive ────────────────────────────────────── */
 @media (max-width: 768px) {
   .toast-host { left: 16px; max-width: none; }

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
 import StatusBadge from '../shared/StatusBadge';
 import IncidentTimeline from './IncidentTimeline';
+import IncidentReport from './IncidentReport';
 import { useLiveEvents } from '../../hooks/useWebSocket';
 
 const RISK_COLOR = {
@@ -159,6 +160,8 @@ export default function IncidentDetail() {
       </div>
 
       <IncidentTimeline incidentId={incident.id} refreshKey={incidentTick} />
+
+      <IncidentReport incidentId={incident.id} isTerminal={isTerminal} refreshKey={incidentTick} />
 
       {diagnosis ? (
         <div className="card">

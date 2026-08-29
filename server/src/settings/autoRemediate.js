@@ -94,6 +94,14 @@ function isToolAutoRemediable(toolName, realRisk) {
  * the rate window. Counted from `incident_actions` joined to the
  * incident's resource, so it survives a restart — an in-memory counter
  * would reset exactly when a crash-looping service needs the limit most.
+ *
+ * Counts `approved_via = 'auto'` specifically, NOT `approved_by IS NULL`.
+ * Those were the same thing until one-click approval from a notification
+ * arrived: that path also has no user id, and a human deliberately
+ * approving from their phone must not consume the budget meant to stop
+ * *unattended* healing from looping. Rows predating migration 012 have
+ * approved_via NULL, so the second clause keeps counting historical
+ * machine approvals correctly.
  */
 function countRecentAutoRemediations(resourceId) {
   const row = getDb().prepare(`
@@ -101,7 +109,7 @@ function countRecentAutoRemediations(resourceId) {
     FROM incident_actions a
     JOIN incidents i ON i.id = a.incident_id
     WHERE i.resource_id = ?
-      AND a.approved_by IS NULL
+      AND (a.approved_via = 'auto' OR (a.approved_via IS NULL AND a.approved_by IS NULL))
       AND a.approved_at >= ?
       AND a.status IN ('approved', 'executed', 'failed')
   `).get(resourceId, Date.now() - RATE_WINDOW_MS);

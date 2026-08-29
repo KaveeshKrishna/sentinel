@@ -392,6 +392,53 @@ test('GET /api/incidents/:id/timeline returns ordered entries and a five-stage r
   });
 });
 
+test('GET /api/incidents/:id/report returns nulls before one exists, and 404s for an unknown id', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const resource = upsertResource({ type: 'container', externalId: 'rep-http-' + crypto.randomUUID(), name: 'demo-db' });
+    const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+
+    const res = await fetch(`${base}/api/incidents/${incident.id}/report`, { headers: auth });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { report: null, markdown: null, generatedAt: null });
+
+    const missing = await fetch(`${base}/api/incidents/999999/report`, { headers: auth });
+    assert.equal(missing.status, 404);
+  });
+});
+
+test('GET /api/incidents/:id/report renders stored structure as markdown', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const { saveReport } = require('./ai/report');
+    const resource = upsertResource({ type: 'container', externalId: 'repmd-' + crypto.randomUUID(), name: 'demo-db' });
+    const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_oom', triggerSummary: 'oom' });
+    saveReport(incident.id, {
+      title: 'demo-db OOM', summary: 'it ran out of memory', rootCause: 'limit too low',
+      prevention: ['raise the limit']
+    });
+
+    const body = await (await fetch(`${base}/api/incidents/${incident.id}/report`, { headers: auth })).json();
+    assert.equal(body.report.title, 'demo-db OOM');
+    assert.match(body.markdown, /# demo-db OOM/);
+    assert.match(body.markdown, /- raise the limit/);
+    assert.ok(body.generatedAt > 0);
+  });
+});
+
+test('POST /api/incidents/:id/report surfaces a generation failure as 502', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const resource = upsertResource({ type: 'container', externalId: 'repfail-' + crypto.randomUUID(), name: 'x' });
+    const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+
+    // No AI provider is configured in this suite.
+    const res = await fetch(`${base}/api/incidents/${incident.id}/report`, { method: 'POST', headers: auth });
+    assert.equal(res.status, 502);
+    assert.match((await res.json()).error, /No AI provider configured/);
+  });
+});
+
 test('chat session routes list, read and delete conversations', async () => {
   await withServer(async (base) => {
     const auth = await loginAndGetAuthHeader(base);

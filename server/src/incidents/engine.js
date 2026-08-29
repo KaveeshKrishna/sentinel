@@ -10,6 +10,8 @@ const { logEvent } = require('../activity/logger');
 const { getResource } = require('../graph/resources');
 const { redact } = require('../ai/redact');
 const { summarizeToolResult } = require('../ai/summarize');
+const { generateReport } = require('../ai/report');
+const { getAIConfig } = require('../settings/aiConfig');
 const { evaluateAutoRemediation, canonicalRemediation } = require('../settings/autoRemediate');
 const { getAgentClient } = require('../agent/client');
 
@@ -112,9 +114,11 @@ async function maybeAutoRemediate(incidentId, actions) {
 function runAutoAction(incidentId, action, reason) {
   logEvent('INCIDENT_AUTO_REMEDIATE',
     `Incident #${incidentId}: auto-approving ${action.tool_name} — ${reason}`);
-  // userId stays null: that's what marks the row as machine-approved,
-  // both in the audit trail and for the rate-limit query.
-  return runRemediationAction(incidentId, action, null, {});
+  // userId stays null AND approved_via is 'auto'. The latter is what the
+  // rate-limit query actually counts now — a one-click approval from a
+  // notification also has no user id, and must not consume the
+  // auto-remediation budget (see settings/autoRemediate.js).
+  return runRemediationAction(incidentId, action, null, {}, 'auto');
 }
 
 /** DETECTED -> INVESTIGATING: gather evidence, then diagnose against it. */
@@ -192,7 +196,7 @@ async function rediagnose(incidentId) {
  * FAILED. A human can then approve a different recommended action, or
  * dismiss.
  */
-async function approve(incidentId, { actionId, userId = null } = {}, verifyOpts = {}) {
+async function approve(incidentId, { actionId, userId = null, via = 'ui' } = {}, verifyOpts = {}) {
   const incident = store.getIncident(incidentId);
   if (!incident) throw new Error(`Incident ${incidentId} not found`);
 
@@ -200,14 +204,14 @@ async function approve(incidentId, { actionId, userId = null } = {}, verifyOpts 
   if (!action || action.incident_id !== incidentId) throw new Error('Action not found for this incident');
 
   return action.real_risk === 'READ_ONLY'
-    ? runInvestigationAction(incident, action, userId)
-    : runRemediationAction(incidentId, action, userId, verifyOpts);
+    ? runInvestigationAction(incident, action, userId, via)
+    : runRemediationAction(incidentId, action, userId, verifyOpts, via);
 }
 
 /** READ_ONLY: execute, append the output as evidence, leave the state alone. */
-async function runInvestigationAction(incident, action, userId) {
+async function runInvestigationAction(incident, action, userId, via = 'ui') {
   const incidentId = incident.id;
-  store.updateActionStatus(action.id, 'approved', { approved_by: userId, approved_at: Date.now() });
+  store.updateActionStatus(action.id, 'approved', { approved_by: userId, approved_at: Date.now(), approved_via: via });
   logEvent('INCIDENT_APPROVED', `Incident #${incidentId}: approved investigation ${action.tool_name}`);
 
   let result;
@@ -237,12 +241,30 @@ async function runInvestigationAction(incident, action, userId) {
   return store.getIncident(incidentId);
 }
 
+/**
+ * Kick off the AI post-incident report once an incident has closed.
+ *
+ * Fire-and-forget and fully isolated: the incident's outcome is already
+ * recorded by the time this runs, and a report that fails to generate —
+ * bad key, exhausted quota, a model that won't return valid JSON — must
+ * never change that outcome or throw into the remediation path. The
+ * operator can regenerate it by hand from the incident page.
+ */
+function writePostIncidentReport(incidentId) {
+  if (!getAIConfig().configured) return;
+  generateReport(incidentId)
+    .then(result => {
+      if (!result.ok) console.error(`[engine] report for #${incidentId} failed:`, result.error);
+    })
+    .catch(err => console.error(`[engine] report for #${incidentId} threw:`, err.message));
+}
+
 /** Above READ_ONLY: the real remediation path, with verification. */
-async function runRemediationAction(incidentId, action, userId, verifyOpts) {
+async function runRemediationAction(incidentId, action, userId, verifyOpts, via = 'ui') {
   const actionId = action.id;
 
   store.updateIncidentStatus(incidentId, 'REMEDIATING');
-  store.updateActionStatus(actionId, 'approved', { approved_by: userId, approved_at: Date.now() });
+  store.updateActionStatus(actionId, 'approved', { approved_by: userId, approved_at: Date.now(), approved_via: via });
   logEvent('INCIDENT_APPROVED', `Incident #${incidentId}: approved ${action.tool_name}`);
 
   // A remediation restarts/stops the very resource being watched — the
@@ -269,6 +291,7 @@ async function runRemediationAction(incidentId, action, userId, verifyOpts) {
     store.updateActionStatus(actionId, 'failed', { executed_at: Date.now(), error: err.message });
     store.recordResolution(incidentId, 'FAILED');
     logEvent('INCIDENT_FAILED', `Incident #${incidentId}: execution of ${action.tool_name} failed: ${err.message}`);
+    writePostIncidentReport(incidentId);
     return store.getIncident(incidentId);
   }
 
@@ -286,6 +309,7 @@ async function runRemediationAction(incidentId, action, userId, verifyOpts) {
     logEvent('INCIDENT_FAILED', `Incident #${incidentId}: action executed but verification never converged`);
   }
 
+  writePostIncidentReport(incidentId);
   return store.getIncident(incidentId);
 }
 

@@ -84,13 +84,13 @@ test('the rate limit escalates to a human after repeated machine-approved attemp
   setAutoRemediateList([`service:${svc.external_id}`]);
 
   // Simulate a crash-looping service: MAX_AUTO_PER_WINDOW prior
-  // auto-approvals (approved_by IS NULL is what marks them machine-run).
+  // auto-approvals (approved_via = 'auto' is what marks them machine-run).
   for (let i = 0; i < MAX_AUTO_PER_WINDOW; i++) {
     const incident = store.createIncident({ resourceId: svc.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
     const action = store.addAction(incident.id, {
       tool: 'start_service', params: {}, claimedRisk: 'LOW', realRisk: 'MEDIUM_RISK', rationale: 'x'
     });
-    store.updateActionStatus(action.id, 'executed', { approved_by: null, approved_at: Date.now() });
+    store.updateActionStatus(action.id, 'executed', { approved_by: null, approved_at: Date.now(), approved_via: 'auto' });
     store.updateIncidentStatus(incident.id, 'INVESTIGATING');
     store.updateIncidentStatus(incident.id, 'DISMISSED');
   }
@@ -153,4 +153,52 @@ test('canonicalRemediation returns null for triggers a restart does not fix', ()
   assert.equal(canonicalRemediation('sustained_ram', host), null);
   assert.equal(canonicalRemediation('disk_usage', host), null);
   assert.equal(canonicalRemediation('service_inactive', { type: 'container', external_id: 'x' }), null); // type mismatch
+});
+
+test('a one-click link approval does not consume the machine rate-limit budget', () => {
+  // Both an auto-remediation and a link approval have approved_by NULL.
+  // Counting on that alone (as this did before migration 012) meant a
+  // human approving from their phone silently ate the budget meant to
+  // stop *unattended* healing from looping.
+  const svc = makeResource('service', 'link-' + crypto.randomUUID().slice(0, 6));
+  setAutoRemediateList([`service:${svc.external_id}`]);
+
+  for (let i = 0; i < MAX_AUTO_PER_WINDOW + 2; i++) {
+    const incident = store.createIncident({ resourceId: svc.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
+    const action = store.addAction(incident.id, {
+      tool: 'start_service', params: {}, claimedRisk: 'LOW', realRisk: 'MEDIUM_RISK', rationale: 'x'
+    });
+    store.updateActionStatus(action.id, 'executed', { approved_by: null, approved_at: Date.now(), approved_via: 'link' });
+    store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+    store.updateIncidentStatus(incident.id, 'DISMISSED');
+  }
+
+  const { allowed } = evaluateAutoRemediation({
+    resource: svc, toolName: 'start_service', realRisk: 'MEDIUM_RISK'
+  });
+  assert.equal(allowed, true);
+});
+
+test('machine approvals predating migration 012 still count against the limit', () => {
+  // Historical rows have approved_via NULL; the fallback clause keeps
+  // them counted so the limit does not silently reset on upgrade.
+  const svc = makeResource('service', 'legacy-' + crypto.randomUUID().slice(0, 6));
+  setAutoRemediateList([`service:${svc.external_id}`]);
+
+  for (let i = 0; i < MAX_AUTO_PER_WINDOW; i++) {
+    const incident = store.createIncident({ resourceId: svc.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
+    const action = store.addAction(incident.id, {
+      tool: 'start_service', params: {}, claimedRisk: 'LOW', realRisk: 'MEDIUM_RISK', rationale: 'x'
+    });
+    // approved_via deliberately left NULL, as an upgraded database has it
+    store.updateActionStatus(action.id, 'executed', { approved_by: null, approved_at: Date.now() });
+    store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+    store.updateIncidentStatus(incident.id, 'DISMISSED');
+  }
+
+  const { allowed, reason } = evaluateAutoRemediation({
+    resource: svc, toolName: 'start_service', realRisk: 'MEDIUM_RISK'
+  });
+  assert.equal(allowed, false);
+  assert.match(reason, /rate limit reached/);
 });
