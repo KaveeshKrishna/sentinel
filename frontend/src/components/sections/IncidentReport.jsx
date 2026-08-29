@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 
 /**
  * The AI-written post-incident report.
@@ -54,15 +55,15 @@ export default function IncidentReport({ incidentId, isTerminal, refreshKey }) {
   return (
     <div className="card">
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <div className="card-title" style={{ margin: 0 }}>📋 Post-Incident Report</div>
+        <div className="card-title" style={{ margin: 0 }}><Icon name="clipboard" /> Post-Incident Report</div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           {report && (
             <button className="btn btn-secondary btn-sm" id="btn-copy-report" onClick={copy}>
-              {copied ? '✓ Copied' : '📄 Copy as Markdown'}
+              {copied ? <><Icon name="check" size={12} /> Copied</> : <><Icon name="file" size={12} /> Copy as Markdown</>}
             </button>
           )}
           <button className="btn btn-secondary btn-sm" id="btn-generate-report" onClick={generate} disabled={generating}>
-            {generating ? 'Writing…' : report ? '↻ Regenerate' : '✨ Generate'}
+            {generating ? 'Writing…' : report ? <><Icon name="refresh-cw" size={12} /> Regenerate</> : <><Icon name="zap" size={12} /> Generate</>}
           </button>
         </div>
       </div>

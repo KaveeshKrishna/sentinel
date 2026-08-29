@@ -10,7 +10,8 @@ const FIELDS = [
   { id: 'diskThresholdPercent', label: 'Disk threshold', unit: '%', hint: 'Raise an incident when disk usage reaches this (no sustain window — disks fill slowly)' },
   { id: 'resourceStreak', label: 'Sustain window', unit: 'polls', hint: 'Consecutive 5s polls CPU/memory must stay over threshold' },
   { id: 'unhealthyStreak', label: 'Unhealthy streak', unit: 'polls', hint: 'Consecutive polls a container must report unhealthy' },
-  { id: 'cooldownMs', label: 'Cooldown', unit: 'ms', hint: 'After a resource resolves, wait this long before raising another for it' }
+  { id: 'cooldownMs', label: 'Cooldown', unit: 'ms', hint: 'After a resource resolves, wait this long before raising another for it' },
+  { id: 'deployCorrelationWindowMs', label: 'Deploy correlation window', unit: 'ms', hint: 'How far back to look for a deploy to the same repo when gathering incident evidence' }
 ];
 
 export default function DetectorSettings() {
@@ -66,15 +67,14 @@ export default function DetectorSettings() {
     }
   }
 
-  if (loading) return <div className="card"><div className="boot-spinner" /></div>;
+  if (loading) return <div className="boot-spinner" />;
   if (!state) return null;
 
   const isDefault = FIELDS.every(f => Number(state.config[f.id]) === Number(state.defaults[f.id]));
 
   return (
-    <div className="card">
-      <div className="card-title">🎚 Detector Thresholds</div>
-      <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: 12 }}>
+    <div>
+      <p className="settings-help">
         When Sentinel raises an incident. Changes take effect on the next 5-second poll — no restart.
         {isDefault && <span style={{ color: 'var(--text-dim)' }}> Currently using defaults.</span>}
       </p>

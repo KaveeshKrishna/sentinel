@@ -1,4 +1,5 @@
 import { useMetrics } from '../../hooks/useWebSocket';
+import Icon from '../shared/Icon';
 
 function fmt(bytes) {
   if (!bytes) return '0 B';
@@ -28,7 +29,7 @@ export default function Storage() {
 
       {/* Root SSD */}
       <div className="card">
-        <div className="card-title">💿 Root SSD (NVMe)</div>
+        <div className="card-title"><Icon name="hard-drive" /> Root SSD (NVMe)</div>
         {du ? (
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -75,7 +76,7 @@ export default function Storage() {
           active read/write of our own); full SMART data is a separate,
           not-yet-built feature (see ARCHITECTURE.md roadmap). */}
       <div className="card" style={otherDisks.length ? undefined : { opacity: 0.5 }}>
-        <div className="card-title">📦 Additional Disks</div>
+        <div className="card-title"><Icon name="package" /> Additional Disks</div>
         {otherDisks.length ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {otherDisks.map(d => (
@@ -95,7 +96,7 @@ export default function Storage() {
           </div>
         ) : (
           <div style={{ display: 'flex', align: 'center', gap: 12, color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-            <span style={{ fontSize: '1.5rem' }}>🔌</span>
+            <span style={{ fontSize: '1.5rem' }}><Icon name="plug" size={22} /></span>
             <div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>None Detected</div>
               <div style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>

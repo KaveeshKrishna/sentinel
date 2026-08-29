@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 
 function timeStr(ts) {
   const d = new Date(ts);
@@ -13,7 +14,7 @@ export default function Activity() {
   useEffect(() => {
     async function load() {
       try {
-        setEvents(await api.get('/activity?limit=500'));
+        setEvents(await api.get('/activity'));
       } finally {
         setLoading(false);
       }
@@ -28,12 +29,12 @@ export default function Activity() {
   return (
     <div className="card">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div className="card-title" style={{ marginBottom: 0 }}>📋 Activity Timeline ({events.length} events)</div>
+        <div className="card-title" style={{ marginBottom: 0 }}><Icon name="clipboard" /> Activity Timeline ({events.length} events)</div>
       </div>
 
       {events.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-state-icon">🕐</div>
+          <div className="empty-state-icon"><Icon name="refresh-cw" size={32} /></div>
           <p>No events yet</p>
         </div>
       ) : (
@@ -41,7 +42,7 @@ export default function Activity() {
           {events.map(ev => (
             <div key={ev.id} className="timeline-item">
               <div className="timeline-icon" style={{ background: `${ev.color}18`, border: `1px solid ${ev.color}40` }}>
-                <span style={{ fontSize: '11px' }}>{ev.icon}</span>
+                <Icon name={ev.icon} size={13} color={ev.color} />
               </div>
               <div className="timeline-body">
                 <div className="timeline-msg">{ev.message}</div>

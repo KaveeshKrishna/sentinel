@@ -1,17 +1,18 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 
 const SERVICE_INFO = {
-  docker:      { icon: '🐳', label: 'Docker' },
-  caddy:       { icon: '🌐', label: 'Caddy' },
-  cloudflared: { icon: '☁',  label: 'Cloudflared' },
-  ssh:         { icon: '🔐', label: 'SSH (sshd)' },
-  ufw:         { icon: '🛡',  label: 'UFW Firewall' }
+  docker:      { icon: 'box', label: 'Docker' },
+  caddy:       { icon: 'globe', label: 'Caddy' },
+  cloudflared: { icon: 'cloud', label: 'Cloudflared' },
+  ssh:         { icon: 'lock', label: 'SSH (sshd)' },
+  ufw:         { icon: 'shield', label: 'UFW Firewall' }
 };
 
 function ServiceCard({ name, status, onAction }) {
   const [acting, setActing] = useState(null);
-  const info = SERVICE_INFO[name] || { icon: '⚙', label: name };
+  const info = SERVICE_INFO[name] || { icon: 'settings', label: name };
   const isActive = status === 'active';
 
   async function act(action) {
@@ -23,7 +24,7 @@ function ServiceCard({ name, status, onAction }) {
   return (
     <div id={`service-card-${name}`} className="service-card">
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: '1.2rem' }}>{info.icon}</span>
+        <span style={{ fontSize: '1.2rem' }}><Icon name={info.icon} size={18} /></span>
         <div>
           <div className="service-name">{info.label}</div>
           <span style={{
@@ -45,7 +46,7 @@ function ServiceCard({ name, status, onAction }) {
           disabled={!!acting}
           title="Restart"
         >
-          {acting === 'restart' ? '…' : '↺'}
+          {acting === 'restart' ? '…' : <Icon name="refresh-cw" size={12} />}
         </button>
         {!isActive && (
           <button

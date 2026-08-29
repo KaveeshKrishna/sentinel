@@ -1,4 +1,5 @@
 import { useMetrics } from '../../hooks/useWebSocket';
+import Icon from '../shared/Icon';
 
 function fmt(bytes) {
   if (!bytes) return '0 B';
@@ -36,7 +37,7 @@ export default function Hardware() {
   const ctx = useMetrics();
   const m   = ctx?.metrics;
 
-  if (!m) return <div className="empty-state"><div className="empty-state-icon">⏳</div><p>Waiting for data…</p></div>;
+  if (!m) return <div className="empty-state"><div className="empty-state-icon"><Icon name="refresh-cw" size={32} /></div><p>Waiting for data…</p></div>;
 
   const cpu  = m.cpu;
   const mem  = m.memory;
@@ -47,7 +48,7 @@ export default function Hardware() {
 
       {/* CPU */}
       <div className="card">
-        <div className="card-title">🔲 CPU</div>
+        <div className="card-title"><Icon name="cpu" /> CPU</div>
         <div className="section-grid-2">
           <div>
             <InfoRow k="Model"       v={cpu?.info?.model} />
@@ -69,7 +70,7 @@ export default function Hardware() {
 
       {/* Memory */}
       <div className="card">
-        <div className="card-title">💾 Memory</div>
+        <div className="card-title"><Icon name="hard-drive" /> Memory</div>
         <div className="section-grid-2">
           <div>
             <InfoRow k="Total"     v={fmt(mem?.total)} />
@@ -88,7 +89,7 @@ export default function Hardware() {
 
       {/* Disk */}
       <div className="card">
-        <div className="card-title">💿 Disk</div>
+        <div className="card-title"><Icon name="hard-drive" /> Disk</div>
         <div className="section-grid-2">
           <div>
             <InfoRow k="Filesystem"  v={disk?.usage?.filesystem} />

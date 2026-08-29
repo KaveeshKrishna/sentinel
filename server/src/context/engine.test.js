@@ -92,3 +92,58 @@ test('a tool failure produces an evidence row describing the failure, not a thro
   const evidence = await gatherEvidence({ id: incidentId, resource_id: api.id });
   assert.ok(evidence.some(e => e.summary.includes('agent down')));
 });
+
+// ── Deploy correlation (Feature 1) ───────────────────────────────────────
+
+test('a correlated deploy is included as evidence and is exempt from the row cap', async () => {
+  const repoName = 'engine-corr-' + crypto.randomUUID();
+  const apiRef = { type: 'container', externalId: 'corr-api-' + crypto.randomUUID(), name: 'corr-api' };
+  // 5 neighbours registered — enough that self (2) + neighbours (up to
+  // MAX_NEIGHBOURS*2=4) + git status (1) already reaches 7, well under
+  // the 12 cap on their own; the point of this test is simply that the
+  // deploy row is present ALONGSIDE everything else, not competing for
+  // the last slot.
+  for (let i = 0; i < 5; i++) {
+    registerRelationship(apiRef, { type: 'container', externalId: `corr-dep-${i}-${crypto.randomUUID()}`, name: `dep-${i}` }, 'depends_on');
+  }
+  const api = upsertResource({ ...apiRef, metadata: { composeProject: repoName } });
+  const incidentId = makeIncidentFor(api.id);
+
+  getDb().prepare(`
+    INSERT INTO deployments (repo_name, from_sha, to_sha, from_message, to_message, deployed_at, deployed_by, status, steps_json)
+    VALUES (?, 'aaa0000', 'bbb1111', 'old code', 'new code', ?, 'user', 'success', '[]')
+  `).run(repoName, Date.now() - 4 * 60 * 1000);
+
+  _setClientForTesting({
+    callTool: async (name) => {
+      if (name === 'get_container_status') return { name: 'x', state: {}, restartCount: 0 };
+      if (name === 'get_container_logs') return [];
+      if (name === 'inspect_git_status') return [];
+      throw new Error(`unexpected tool ${name}`);
+    }
+  });
+
+  const evidence = await gatherEvidence({ id: incidentId, resource_id: api.id, detected_at: Date.now() });
+  const deployRow = evidence.find(e => e.sourceTool === 'deploy_correlation');
+  assert.ok(deployRow, 'the correlated deploy must appear as its own evidence row');
+  assert.equal(evidence[0].sourceTool, 'deploy_correlation', 'seeded first, so never crowded out by routine evidence');
+  assert.match(deployRow.summary, /old code/);
+  assert.match(deployRow.summary, /new code/);
+});
+
+test('no deploy correlation row appears when the resource has no compose metadata', async () => {
+  const api = upsertResource({ type: 'container', externalId: 'no-compose-' + crypto.randomUUID(), name: 'no-compose' });
+  const incidentId = makeIncidentFor(api.id);
+
+  _setClientForTesting({
+    callTool: async (name) => {
+      if (name === 'get_container_status') return { name: 'x', state: {}, restartCount: 0 };
+      if (name === 'get_container_logs') return [];
+      if (name === 'inspect_git_status') return [];
+      throw new Error(`unexpected tool ${name}`);
+    }
+  });
+
+  const evidence = await gatherEvidence({ id: incidentId, resource_id: api.id, detected_at: Date.now() });
+  assert.ok(!evidence.some(e => e.sourceTool === 'deploy_correlation'));
+});

@@ -13,6 +13,14 @@ export function WebSocketProvider({ children }) {
   const [lastIncident, setLastIncident] = useState(null);
   const [incidentTick, setIncidentTick] = useState(0);
   const [liveEvents, setLiveEvents]     = useState([]);
+  // Latest AI provider failover/exhaustion push. Carries the provider's
+  // own error text so the operator sees the real reason, not "AI failed".
+  const [lastAiProblem, setLastAiProblem] = useState(null);
+  const [aiProblemTick, setAiProblemTick] = useState(0);
+  // An Ask Sentinel turn that finished. Turns now outlive the page that
+  // started them, so an answer can land while the operator is elsewhere.
+  const [lastChat, setLastChat] = useState(null);
+  const [chatTick, setChatTick] = useState(0);
   const wsRef       = useRef(null);
   const timerRef    = useRef(null);
 
@@ -37,6 +45,12 @@ export function WebSocketProvider({ children }) {
           setIncidentTick(t => t + 1);
         } else if (msg.type === 'activity') {
           setLiveEvents(prev => [msg.data, ...prev].slice(0, MAX_LIVE_EVENTS));
+        } else if (msg.type === 'ai_provider') {
+          setLastAiProblem(msg.data);
+          setAiProblemTick(t => t + 1);
+        } else if (msg.type === 'chat') {
+          setLastChat(msg.data);
+          setChatTick(t => t + 1);
         }
       } catch {}
     };
@@ -52,7 +66,10 @@ export function WebSocketProvider({ children }) {
   }, [connect]);
 
   return (
-    <WSContext.Provider value={{ metrics, connected, lastIncident, incidentTick, liveEvents }}>
+    <WSContext.Provider value={{
+      metrics, connected, lastIncident, incidentTick, liveEvents,
+      lastAiProblem, aiProblemTick, lastChat, chatTick
+    }}>
       {children}
     </WSContext.Provider>
   );
@@ -70,6 +87,10 @@ export function useLiveEvents() {
   return {
     lastIncident: ctx?.lastIncident ?? null,
     incidentTick: ctx?.incidentTick ?? 0,
-    liveEvents: ctx?.liveEvents ?? []
+    liveEvents: ctx?.liveEvents ?? [],
+    lastAiProblem: ctx?.lastAiProblem ?? null,
+    aiProblemTick: ctx?.aiProblemTick ?? 0,
+    lastChat: ctx?.lastChat ?? null,
+    chatTick: ctx?.chatTick ?? 0
   };
 }

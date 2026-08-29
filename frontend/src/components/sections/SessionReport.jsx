@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 import {
   Chart as ChartJS,
   CategoryScale, LinearScale, PointElement, LineElement,
@@ -79,7 +80,7 @@ export default function SessionReport({ sessionId, onBack, onDeleted }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Back button */}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-        <button id="btn-back-sessions" className="btn btn-secondary btn-sm" onClick={onBack}>← Back</button>
+        <button id="btn-back-sessions" className="btn btn-secondary btn-sm" onClick={onBack}><Icon name="chevron-left" size={12} /> Back</button>
         <div style={{ fontSize: '1rem', fontWeight: 600 }}>{session.name}</div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <a
@@ -87,13 +88,13 @@ export default function SessionReport({ sessionId, onBack, onDeleted }) {
             href={`/api/recordings/${sessionId}/export/csv`}
             className="btn btn-secondary btn-sm"
             download
-          >⬇ CSV</a>
+          ><Icon name="arrow-down" size={12} /> CSV</a>
           <a
             id="btn-export-json"
             href={`/api/recordings/${sessionId}/export/json`}
             className="btn btn-secondary btn-sm"
             download
-          >⬇ JSON</a>
+          ><Icon name="arrow-down" size={12} /> JSON</a>
           <button
             id="btn-delete-session-detail"
             className="btn btn-danger btn-sm"
@@ -102,7 +103,7 @@ export default function SessionReport({ sessionId, onBack, onDeleted }) {
               await api.del(`/recordings/${sessionId}`);
               onDeleted();
             }}
-          >🗑 Delete</button>
+          ><Icon name="trash" size={12} /> Delete</button>
         </div>
       </div>
 
@@ -118,10 +119,10 @@ export default function SessionReport({ sessionId, onBack, onDeleted }) {
           </div>
           <div style={{ flex: 1, minWidth: 200 }}>
             {a.positives?.map((p, i) => (
-              <div key={i} style={{ fontSize: '0.8rem', color: 'var(--green)', marginBottom: 2 }}>✓ {p}</div>
+              <div key={i} style={{ fontSize: '0.8rem', color: 'var(--green)', marginBottom: 2 }}><Icon name="check" size={12} /> {p}</div>
             ))}
             {a.issues?.map((p, i) => (
-              <div key={i} style={{ fontSize: '0.8rem', color: 'var(--red)', marginBottom: 2 }}>✗ {p}</div>
+              <div key={i} style={{ fontSize: '0.8rem', color: 'var(--red)', marginBottom: 2 }}><Icon name="x" size={12} /> {p}</div>
             ))}
           </div>
         </div>
@@ -173,7 +174,7 @@ export default function SessionReport({ sessionId, onBack, onDeleted }) {
       {/* Container timeline */}
       {a.containerStats?.length > 0 && (
         <div className="card">
-          <div className="card-title">🐳 Container Summary</div>
+          <div className="card-title"><Icon name="box" /> Container Summary</div>
           <table className="data-table">
             <thead>
               <tr><th>Name</th><th>Avg CPU</th><th>Avg RAM</th><th>Restarts</th><th>Unhealthy Samples</th></tr>

@@ -21,6 +21,47 @@ function findComposeFile(repoPath) {
   return null;
 }
 
+/** `git log -1 --format=%s <sha>` — the subject line only, truncated like getRepoInfo's own. */
+async function commitMessageFor(repoPath, sha) {
+  try {
+    return (await safeExec('git', ['log', '-1', '--format=%s', sha], repoPath)).slice(0, 120);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `docker compose build` + `up -d` for a repo, shared by deploy_repository
+ * and rollback_repository so their Docker-side behavior can never drift
+ * apart. Pushes onto the caller's `steps` array and returns it. Throws on
+ * either command's failure, same as before this was extracted — this is a
+ * pure refactor of existing tested behavior, not a change to it.
+ */
+async function runComposeDeploy(repoPath, composeFile, steps) {
+  await execFileAsync('docker', ['compose', '-f', path.join(repoPath, composeFile), 'build'], { cwd: repoPath, timeout: 300000 });
+  steps.push({ step: 'build', ok: true });
+
+  await execFileAsync('docker', ['compose', '-f', path.join(repoPath, composeFile), 'up', '-d'], { cwd: repoPath, timeout: 120000 });
+  steps.push({ step: 'up', ok: true });
+
+  return steps;
+}
+
+/** `docker compose ps` as a post-action check — shared by deploy's and rollback's `verify`. */
+async function verifyComposeUp(repoPath) {
+  const composeFile = findComposeFile(repoPath);
+  if (!composeFile) return { ok: true, detail: 'No compose file to verify' };
+  try {
+    const { stdout } = await execFileAsync(
+      'docker', ['compose', '-f', path.join(repoPath, composeFile), 'ps', '--format', 'json'],
+      { cwd: repoPath, timeout: 15000 }
+    );
+    return { ok: true, detail: stdout };
+  } catch (err) {
+    return { ok: false, detail: err.message };
+  }
+}
+
 async function getRepoInfo(repoPath, name) {
   try {
     const branch = await safeExec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repoPath);
@@ -174,6 +215,14 @@ module.exports = function registerGitTools(registry) {
         throw new Error(`Repository has uncommitted changes: ${count} file(s). Commit or stash before deploying.`);
       }
 
+      // Captured before the fetch/pull so a durable deploy record (the
+      // server's `deployments` table) can say what this deploy actually
+      // changed — git commit.date alone is the AUTHOR date, not when it
+      // was deployed, so without this there is no way to correlate an
+      // incident with "a deploy just happened".
+      const fromSha = await safeExec('git', ['rev-parse', 'HEAD'], repoPath);
+      const fromMessage = await commitMessageFor(repoPath, fromSha);
+
       await safeExec('git', ['fetch', '--prune'], repoPath);
       steps.push({ step: 'fetch', ok: true });
 
@@ -183,38 +232,101 @@ module.exports = function registerGitTools(registry) {
       } catch { /* no upstream configured */ }
 
       if (behind === 0) {
-        return { repo: safeName, steps, upToDate: true, message: 'Already up to date' };
+        return {
+          repo: safeName, steps, upToDate: true, message: 'Already up to date',
+          fromSha, toSha: fromSha, fromMessage, toMessage: fromMessage
+        };
       }
 
       const pullOut = await safeExec('git', ['pull', '--ff-only'], repoPath);
       steps.push({ step: 'pull', ok: true, output: pullOut });
 
+      const toSha = await safeExec('git', ['rev-parse', 'HEAD'], repoPath);
+      const toMessage = await commitMessageFor(repoPath, toSha);
+
       const composeFile = findComposeFile(repoPath);
       if (!composeFile) {
-        return { repo: safeName, steps, upToDate: false, message: 'Pulled. No compose file found — skipping Docker steps.' };
+        return {
+          repo: safeName, steps, upToDate: false, message: 'Pulled. No compose file found — skipping Docker steps.',
+          fromSha, toSha, fromMessage, toMessage
+        };
       }
 
-      await execFileAsync('docker', ['compose', '-f', path.join(repoPath, composeFile), 'build'], { cwd: repoPath, timeout: 300000 });
-      steps.push({ step: 'build', ok: true });
+      await runComposeDeploy(repoPath, composeFile, steps);
 
-      await execFileAsync('docker', ['compose', '-f', path.join(repoPath, composeFile), 'up', '-d'], { cwd: repoPath, timeout: 120000 });
-      steps.push({ step: 'up', ok: true });
-
-      return { repo: safeName, steps, upToDate: false, message: 'Deployed successfully' };
+      return { repo: safeName, steps, upToDate: false, message: 'Deployed successfully', fromSha, toSha, fromMessage, toMessage };
     },
     verify: async ({ repo }) => {
       const { repoPath } = resolveRepoPath(repo);
-      const composeFile = findComposeFile(repoPath);
-      if (!composeFile) return { ok: true, detail: 'No compose file to verify' };
-      try {
-        const { stdout } = await execFileAsync(
-          'docker', ['compose', '-f', path.join(repoPath, composeFile), 'ps', '--format', 'json'],
-          { cwd: repoPath, timeout: 15000 }
-        );
-        return { ok: true, detail: stdout };
-      } catch (err) {
-        return { ok: false, detail: err.message };
+      return verifyComposeUp(repoPath);
+    }
+  });
+
+  registry.register({
+    name: 'rollback_repository',
+    description: 'Roll a repository back to a previously-deployed commit (git reset --hard) and re-run docker compose build + up -d if a compose file is present. Refuses if the working tree is dirty or the target commit is not reachable locally.',
+    risk: 'MEDIUM_RISK',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', minLength: 1 },
+        sha: { type: 'string', pattern: '^[0-9a-fA-F]{7,40}$' }
+      },
+      required: ['repo', 'sha'],
+      additionalProperties: false
+    },
+    handler: async ({ repo, sha }) => {
+      const { safeName, repoPath } = resolveRepoPath(repo);
+      const steps = [];
+
+      const dirty = await safeExec('git', ['status', '--porcelain'], repoPath);
+      if (dirty !== '') {
+        const count = dirty.split('\n').filter(Boolean).length;
+        throw new Error(`Repository has uncommitted changes: ${count} file(s). Commit or stash before rolling back.`);
       }
+
+      // The target must already exist locally — a rollback is only ever
+      // to a sha this agent itself previously fetched (recorded by a real
+      // deploy), never an arbitrary remote ref, so a miss here means a
+      // wrong sha was supplied rather than something to fetch and retry.
+      try {
+        await execFileAsync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: repoPath, timeout: 15000 });
+      } catch {
+        throw new Error(`Unknown commit "${sha}" in this repository — it may not have been fetched yet.`);
+      }
+
+      const fromSha = await safeExec('git', ['rev-parse', 'HEAD'], repoPath);
+      const fromMessage = await commitMessageFor(repoPath, fromSha);
+
+      // --hard (not `checkout -- .`, not a detached-HEAD checkout): moves
+      // the current branch pointer back while staying ON the branch, with
+      // upstream tracking intact. That means a later ordinary
+      // deploy_repository call against this same repo correctly sees a
+      // positive `behind` count again and fast-forwards back to tip — a
+      // rollback is "stop the bleeding now", not a permanent detour that
+      // needs its own separate "undo" tool. Safe specifically because the
+      // dirty-check above already guarantees nothing uncommitted is lost.
+      await safeExec('git', ['reset', '--hard', sha], repoPath);
+      steps.push({ step: 'reset', ok: true });
+
+      const toSha = await safeExec('git', ['rev-parse', 'HEAD'], repoPath);
+      const toMessage = await commitMessageFor(repoPath, toSha);
+
+      const composeFile = findComposeFile(repoPath);
+      if (!composeFile) {
+        return {
+          repo: safeName, steps, message: 'Rolled back. No compose file found — skipping Docker steps.',
+          fromSha, toSha, fromMessage, toMessage
+        };
+      }
+
+      await runComposeDeploy(repoPath, composeFile, steps);
+
+      return { repo: safeName, steps, message: `Rolled back to ${toSha.slice(0, 7)}`, fromSha, toSha, fromMessage, toMessage };
+    },
+    verify: async ({ repo }) => {
+      const { repoPath } = resolveRepoPath(repo);
+      return verifyComposeUp(repoPath);
     }
   });
 };

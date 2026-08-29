@@ -14,7 +14,7 @@ const assert = require('node:assert/strict');
 const { migrate } = require('../db/migrate');
 const { getDb } = require('../db/connection');
 const { registerRelationship } = require('../graph/relationships');
-const { getResourceByRef, upsertResource } = require('../graph/resources');
+const { getResourceByRef, upsertResource, getResource } = require('../graph/resources');
 const { _setClientForTesting, _resetClientForTesting } = require('../agent/client');
 const { setAIConfig, clearAIConfig } = require('../settings/aiConfig');
 const { _setProviderForTesting, _resetProviderForTesting } = require('../ai/provider');
@@ -46,6 +46,19 @@ after(async () => {
     try { fs.rmSync(DB_PATH + suffix); } catch { /* already gone */ }
   }
 });
+
+/**
+ * Put a resource on the auto-remediation opt-in list — which is also
+ * what gates unattended diagnosis (detector.js's shouldAutoDiagnose),
+ * so any test about the automatic path needs it.
+ */
+function optIn(resource) {
+  const { getAutoRemediateList, setAutoRemediateList, resourceKey } = require('../settings/autoRemediate');
+  const key = resourceKey(resource.type, resource.external_id);
+  if (!getAutoRemediateList().includes(key)) {
+    setAutoRemediateList([...getAutoRemediateList(), key]);
+  }
+}
 
 test('a container dying with a non-zero exit code raises an incident', async () => {
   const name = 'app-' + crypto.randomUUID();
@@ -190,8 +203,13 @@ test('a cooldown blocks a new incident right after resolution, but allows one on
 });
 
 /** An incident already at INVESTIGATING with no diagnosis yet — the "detected before an AI provider was configured" state. */
-function makeStuckIncident(ageMs) {
+function makeStuckIncident(ageMs, { autoDiagnose = true } = {}) {
   const resource = upsertResource({ type: 'container', externalId: 'stuck-' + crypto.randomUUID(), name: 'stuck' });
+  // Unattended re-diagnosis is gated on the auto-remediation opt-in
+  // (detector.js's shouldAutoDiagnose). These tests are about the
+  // retry/backoff policy, so opt in by default; pass false to exercise
+  // the gate itself.
+  if (autoDiagnose) optIn(resource);
   const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_unhealthy', triggerSummary: 'stuck' });
   store.updateIncidentStatus(incident.id, 'INVESTIGATING');
   getDb().prepare('UPDATE incidents SET updated_at = ? WHERE id = ?').run(Date.now() - ageMs, incident.id);
@@ -297,6 +315,10 @@ test('checkStaleWaitingIncidents re-diagnoses an incident parked past the stalen
   });
 
   const r = upsertResource({ type: 'service', externalId: 'stale-' + crypto.randomUUID(), name: 'caddy' });
+  // Unattended re-diagnosis is gated on the auto-remediation opt-in
+  // (detector.js's shouldAutoDiagnose) — this test is about the backoff
+  // policy, so put the resource on that list.
+  optIn(r);
   const incident = store.createIncident({ resourceId: r.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
   store.updateIncidentStatus(incident.id, 'INVESTIGATING');
   store.recordDiagnosis(incident.id, { rootCause: 'old wrong diagnosis', confidence: 0.5 });
@@ -330,6 +352,7 @@ test('checkStaleWaitingIncidents leaves a freshly-updated incident alone', async
 
   const r = upsertResource({ type: 'service', externalId: 'fresh-' + crypto.randomUUID(), name: 'x' });
   const incident = store.createIncident({ resourceId: r.id, triggerRule: 'service_inactive', triggerSummary: 'down' });
+  optIn(r);
   store.updateIncidentStatus(incident.id, 'INVESTIGATING');
   store.recordDiagnosis(incident.id, { rootCause: 'recent', confidence: 0.5 });
   store.updateIncidentStatus(incident.id, 'AWAITING_APPROVAL'); // updated_at = now
@@ -339,4 +362,187 @@ test('checkStaleWaitingIncidents leaves a freshly-updated incident alone', async
 
   clearAIConfig();
   _resetProviderForTesting();
+});
+
+
+// ── Auto-diagnosis is opt-in ────────────────────────────────────────────
+// Detection is free; a diagnosis is a provider request, and a free tier's
+// daily allowance (20/day on the Gemini tier this install uses) is easily
+// spent by routine container churn nobody was watching. Only a resource
+// the operator has opted into auto-remediation is diagnosed unattended.
+
+test('an incident for a NON-opted-in resource is raised but never sent to the AI', async () => {
+  setAIConfig({ provider: 'openai-compatible', model: 'm', baseUrl: '', apiKey: 'k' });
+  let chatCalls = 0;
+  _setProviderForTesting({ chat: async () => { chatCalls++; return { text: '{}', usage: {} }; } });
+  _setClientForTesting(flatAgent());
+
+  const name = 'unlisted-' + crypto.randomUUID();
+  await detector.raiseIncident({
+    resourceRef: { type: 'container', externalId: name, name },
+    severity: 'high', triggerRule: 'container_exit', triggerSummary: 'exited 1'
+  });
+  await new Promise(r => setTimeout(r, 60));
+
+  const resource = upsertResource({ type: 'container', externalId: name, name });
+  const incident = store.findOpenIncidentForResource(resource.id);
+  assert.ok(incident, 'the incident is still detected and recorded — only the AI call is withheld');
+  assert.equal(incident.status, 'DETECTED', 'it waits for a human to press Diagnose');
+  assert.equal(chatCalls, 0, 'no provider request was spent');
+
+  clearAIConfig();
+  _resetProviderForTesting();
+  _resetClientForTesting();
+});
+
+test('an incident for an opted-in resource IS diagnosed automatically', async () => {
+  setAIConfig({ provider: 'openai-compatible', model: 'm', baseUrl: '', apiKey: 'k' });
+  let chatCalls = 0;
+  _setProviderForTesting({
+    chat: async () => {
+      chatCalls++;
+      return { text: JSON.stringify({ rootCause: 'it exited', recommendedActions: [] }), usage: {} };
+    }
+  });
+  _setClientForTesting(flatAgent());
+
+  const name = 'listed-' + crypto.randomUUID();
+  optIn(upsertResource({ type: 'container', externalId: name, name }));
+
+  await detector.raiseIncident({
+    resourceRef: { type: 'container', externalId: name, name },
+    severity: 'high', triggerRule: 'container_exit', triggerSummary: 'exited 1'
+  });
+  await new Promise(r => setTimeout(r, 80));
+
+  const resource = upsertResource({ type: 'container', externalId: name, name });
+  const incident = store.findOpenIncidentForResource(resource.id);
+  assert.equal(chatCalls, 1, 'a resource Sentinel may heal unattended is worth diagnosing unattended');
+  assert.equal(incident.root_cause, 'it exited');
+
+  clearAIConfig();
+  _resetProviderForTesting();
+  _resetClientForTesting();
+});
+
+test('checkStuckInvestigations skips a non-opted-in incident rather than retrying it forever', async () => {
+  setAIConfig({ provider: 'openai-compatible', model: 'm', baseUrl: '', apiKey: 'k' });
+  let chatCalls = 0;
+  _setProviderForTesting({ chat: async () => { chatCalls++; return { text: '{}', usage: {} }; } });
+  _setClientForTesting(flatAgent());
+
+  makeStuckIncident(60000, { autoDiagnose: false });
+  await detector.checkStuckInvestigations();
+  await new Promise(r => setTimeout(r, 60));
+
+  assert.equal(chatCalls, 0, 'an unattended retry is still an unattended provider call');
+
+  clearAIConfig();
+  _resetProviderForTesting();
+  _resetClientForTesting();
+});
+
+// ── Compose metadata sync (deploy correlation) ──────────────────────────
+
+test('checkContainerHealth records compose project/service labels onto the resource', async () => {
+  const name = 'demo-api-' + crypto.randomUUID();
+  const agent = flatAgent({
+    list_containers: () => [
+      { name, health: 'healthy', composeProject: 'demo-api', composeService: 'web', composeDependsOn: null }
+    ]
+  });
+
+  await detector.checkContainerHealth(agent);
+
+  const resource = getResourceByRef('container', name);
+  assert.ok(resource);
+  assert.deepEqual(resource.metadata, { composeProject: 'demo-api', composeService: 'web' });
+});
+
+test('checkContainerHealth leaves an already-recorded compose label alone for a container reporting none this tick', async () => {
+  const name = 'flaky-labels-' + crypto.randomUUID();
+  upsertResource({ type: 'container', externalId: name, name, metadata: { composeProject: 'demo-api', composeService: 'web' } });
+
+  const agent = flatAgent({
+    // Simulates a container observed without compose labels this tick
+    // (e.g. dockerode returned an incomplete inspect) — must not erase
+    // what an earlier tick already recorded.
+    list_containers: () => [{ name, health: 'healthy', composeProject: null, composeService: null }]
+  });
+  await detector.checkContainerHealth(agent);
+
+  assert.deepEqual(getResourceByRef('container', name).metadata, { composeProject: 'demo-api', composeService: 'web' });
+});
+
+test('a container_exit upsert (no metadata passed) does not wipe compose metadata set earlier in the same tick', async () => {
+  // Regression for the exact bug found during review: raiseIncident's own
+  // upsertResource(resourceRef) call (on container_exit) never passes
+  // metadata, so without graph/resources.js's COALESCE fix this would
+  // silently erase the compose labels checkContainerHealth just set —
+  // right as an incident is raised, exactly when deploy correlation
+  // needs them.
+  const name = 'dies-' + crypto.randomUUID();
+  const agent = flatAgent({
+    list_containers: () => [{ name, health: 'healthy', composeProject: 'demo-api', composeService: 'web' }],
+    get_docker_events: () => [{ type: 'die', name, exitCode: '1', ts: Date.now() }]
+  });
+
+  await detector.checkContainerHealth(agent);
+  await detector.checkContainerEvents(agent);
+
+  assert.deepEqual(getResourceByRef('container', name).metadata, { composeProject: 'demo-api', composeService: 'web' });
+});
+
+// ── Learned runbooks (Feature 2) run unconditionally, ahead of the AI gate ──
+
+test('a matching runbook fires for a non-opted-in resource, without ever calling the AI', async () => {
+  const { getDb } = require('../db/connection');
+  const triggerRule = 'container_exit';
+  const resourceType = 'container';
+
+  // Seed a 2/2 track record for restart_container on this trigger+type,
+  // via raw SQL — the same house style detector.test.js already uses for
+  // backdated timestamps, since walking the full state machine just to
+  // seed history would obscure what's actually being tested.
+  const seedIncident = () => {
+    const r = upsertResource({ type: resourceType, externalId: 'seed-' + crypto.randomUUID(), name: 'seed' });
+    const now = Date.now();
+    const incidentId = getDb().prepare(`
+      INSERT INTO incidents (resource_id, status, trigger_rule, trigger_summary, detected_at, updated_at, resolved_at)
+      VALUES (?, 'RESOLVED', ?, 'x', ?, ?, ?)
+    `).run(r.id, triggerRule, now, now, now + 500).lastInsertRowid;
+    getDb().prepare(`
+      INSERT INTO incident_actions (incident_id, tool_name, params_json, real_risk, status, created_at, executed_at)
+      VALUES (?, 'restart_container', '{}', 'MEDIUM_RISK', 'executed', ?, ?)
+    `).run(incidentId, now, now);
+  };
+  seedIncident();
+  seedIncident();
+
+  setAIConfig({ provider: 'openai-compatible', model: 'm', baseUrl: '', apiKey: 'k' });
+  let chatCalls = 0;
+  _setProviderForTesting({ chat: async () => { chatCalls++; return { text: '{}', usage: {} }; } });
+  _setClientForTesting({
+    listTools: async () => [{ name: 'restart_container', risk: 'MEDIUM_RISK', description: 'x', parameters: {} }],
+    callTool: async () => ({}),
+    verifyTool: async () => ({ ok: true })
+  });
+
+  const name = 'runbook-target-' + crypto.randomUUID(); // NOT opted into auto-remediation
+  await detector.raiseIncident({
+    resourceRef: { type: 'container', externalId: name, name },
+    severity: 'high', triggerRule, triggerSummary: 'exited 1'
+  });
+  await new Promise(r => setTimeout(r, 80));
+
+  const resource = getResourceByRef('container', name);
+  const incident = store.findOpenIncidentForResource(resource.id);
+  assert.ok(incident, 'a non-opted-in resource is still detected');
+  assert.equal(incident.status, 'AWAITING_APPROVAL', 'the runbook proposal still needs a human click, since this resource is not auto-remediate-opted-in');
+  assert.equal(incident.diagnosis?.source, 'runbook');
+  assert.equal(chatCalls, 0, 'the runbook match must never spend a provider request');
+
+  clearAIConfig();
+  _resetProviderForTesting();
+  _resetClientForTesting();
 });

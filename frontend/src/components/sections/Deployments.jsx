@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 
 function timeAgo(dateStr) {
   if (!dateStr) return '—';
@@ -65,23 +66,23 @@ function RepoCard({ repo, onRefresh }) {
     <div id={`repo-card-${repo.name}`} className="repo-card">
       <div className="repo-header">
         <div>
-          <div className="repo-name">📁 {repo.name}</div>
-          {repo.branch && <span className="repo-branch">⎇ {repo.branch}</span>}
+          <div className="repo-name"><Icon name="folder" /> {repo.name}</div>
+          {repo.branch && <span className="repo-branch"><Icon name="git-branch" size={12} /> {repo.branch}</span>}
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {isDirty && (
             <span style={{ fontSize: '0.72rem', color: 'var(--yellow)', background: 'var(--yellow-dim)', padding: '2px 8px', borderRadius: 4 }}>
-              ⚠ Dirty ({repo.uncommittedFiles} files)
+              <Icon name="alert-triangle" size={12} /> Dirty ({repo.uncommittedFiles} files)
             </span>
           )}
           {repo.behind > 0 && !isDirty && (
             <span style={{ fontSize: '0.72rem', color: 'var(--green)', background: 'var(--green-dim)', padding: '2px 8px', borderRadius: 4 }}>
-              ⬇ {repo.behind} behind
+              <Icon name="arrow-down" size={12} /> {repo.behind} behind
             </span>
           )}
           {repo.ahead > 0 && (
             <span style={{ fontSize: '0.72rem', color: 'var(--accent)', background: 'var(--accent-dim)', padding: '2px 8px', borderRadius: 4 }}>
-              ⬆ {repo.ahead} ahead
+              <Icon name="arrow-up" size={12} /> {repo.ahead} ahead
             </span>
           )}
         </div>
@@ -108,7 +109,7 @@ function RepoCard({ repo, onRefresh }) {
               disabled={deploying || !!repo.error || isDirty}
               title={isDirty ? 'Cannot deploy: uncommitted changes' : repo.behind === 0 ? 'Already up to date' : 'Deploy'}
             >
-              {deploying ? '⏳ Deploying…' : '🚀 Pull & Deploy'}
+              {deploying ? <><Icon name="refresh-cw" size={12} /> Deploying…</> : <><Icon name="rocket" size={12} /> Pull & Deploy</>}
             </button>
             <button
               id={`btn-toggle-logs-${repo.name}`}
@@ -119,7 +120,7 @@ function RepoCard({ repo, onRefresh }) {
             </button>
             {repo.composeFile && (
               <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>
-                📄 {repo.composeFile}
+                <Icon name="file" size={12} /> {repo.composeFile}
               </span>
             )}
           </div>
@@ -157,7 +158,7 @@ export default function Deployments() {
   if (loading) return <div className="empty-state"><div className="boot-spinner" /></div>;
   if (repos.length === 0) return (
     <div className="empty-state">
-      <div className="empty-state-icon">📁</div>
+      <div className="empty-state-icon"><Icon name="folder" size={32} /></div>
       <p>No git repositories found in /srv/apps</p>
     </div>
   );
@@ -165,7 +166,7 @@ export default function Deployments() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <button id="btn-refresh-repos" className="btn btn-secondary btn-sm" onClick={load}>↺ Refresh</button>
+        <button id="btn-refresh-repos" className="btn btn-secondary btn-sm" onClick={load}><Icon name="refresh-cw" size={12} /> Refresh</button>
       </div>
       {repos.map(repo => (
         <RepoCard key={repo.name} repo={repo} onRefresh={load} />

@@ -158,8 +158,31 @@ async function runChecks() {
   results.push(check('Capability: GPU', which('nvidia-smi') ? 'ok' : 'skip',
     which('nvidia-smi') ? 'nvidia-smi detected' : 'not detected'));
 
-  // ── AI provider (Phase 3) ──────────────────────────────────────────────
-  results.push(check('AI provider', 'skip', 'not yet implemented (Phase 3)'));
+  // ── AI provider ──────────────────────────────────────────────────────
+  // Read-only count of enabled ai_credentials rows. Shells out to the
+  // `sqlite3` CLI (like this file already shells out to `systemctl`,
+  // `which`, etc.) rather than adding better-sqlite3 as a dependency of
+  // this small CLI package just for one diagnostic line — no key is ever
+  // decrypted here, only counted; doctor is a health check, not a
+  // credential validator.
+  if (!which('sqlite3')) {
+    results.push(check('AI provider', 'skip', 'sqlite3 CLI not installed — cannot inspect ai_credentials'));
+  } else if (!fs.existsSync(paths.DB_PATH)) {
+    results.push(check('AI provider', 'skip', `${paths.DB_PATH} not found or not accessible yet`));
+  } else {
+    try {
+      const out = execFileSync(
+        'sqlite3', [paths.DB_PATH, 'SELECT COUNT(*) FROM ai_credentials WHERE enabled = 1;'],
+        { encoding: 'utf8', timeout: 3000 }
+      ).trim();
+      const enabledCount = parseInt(out, 10) || 0;
+      results.push(enabledCount > 0
+        ? check('AI provider', 'ok', `${enabledCount} enabled credential${enabledCount === 1 ? '' : 's'} — diagnosis/chat/reports available`)
+        : check('AI provider', 'warn', 'no AI provider configured — diagnosis, Ask Sentinel and reports are disabled'));
+    } catch (err) {
+      results.push(check('AI provider', 'skip', `could not query ai_credentials: ${err.message}`));
+    }
+  }
 
   return results;
 }

@@ -37,10 +37,26 @@ async function diagnoseWithEvidence(incidentId, evidenceRows) {
     return store.getIncident(incidentId);
   }
 
-  store.recordDiagnosis(incidentId, diagnosisResult.diagnosis);
-  logEvent('INCIDENT_DIAGNOSED', `Incident #${incidentId} diagnosed: ${diagnosisResult.diagnosis.rootCause}`);
+  return applyDiagnosis(incidentId, diagnosisResult.diagnosis);
+}
 
-  const added = diagnosisResult.diagnosis.actions.map(action => store.addAction(incidentId, action));
+/**
+ * Store a diagnosis (real, from the AI, or synthetic, from a matched
+ * runbook — see `applyRunbook` below) and propose its actions. Shared by
+ * both so a runbook match auto-executes through the exact same
+ * `maybeAutoRemediate` gates an AI-proposed action does, with zero
+ * separate auto-execute path to keep in sync.
+ *
+ * Requires the incident to already be at INVESTIGATING — `recordDiagnosis`
+ * transitions INVESTIGATING -> DIAGNOSED, and both callers (the real AI
+ * path via `startInvestigation`, and `applyRunbook` below) put it there
+ * first.
+ */
+function applyDiagnosis(incidentId, diagnosis) {
+  store.recordDiagnosis(incidentId, diagnosis);
+  logEvent('INCIDENT_DIAGNOSED', `Incident #${incidentId} diagnosed: ${diagnosis.rootCause}`);
+
+  const added = diagnosis.actions.map(action => store.addAction(incidentId, action));
 
   if (added.length > 0) {
     store.updateIncidentStatus(incidentId, 'AWAITING_APPROVAL');
@@ -51,6 +67,76 @@ async function diagnoseWithEvidence(incidentId, evidenceRows) {
   // Even with zero proposed actions, an opted-in resource with a
   // deterministic trigger still gets its canonical remediation.
   return maybeAutoRemediate(incidentId, added);
+}
+
+/**
+ * Apply a matched runbook (settings-free, AI-free) as if it were a
+ * diagnosis: DETECTED -> INVESTIGATING -> DIAGNOSED -> (AWAITING_APPROVAL
+ * if the action was proposed), via the same `applyDiagnosis` tail an AI
+ * diagnosis uses — so a runbook match for an opted-in resource
+ * auto-executes through the exact existing `evaluateAutoRemediation`
+ * gates, and for a non-opted-in resource still requires the normal human
+ * approve click. Runbooks change WHAT gets proposed and HOW CHEAPLY,
+ * never WHETHER a human approves it.
+ *
+ * Resolves the tool's real registered risk from the agent's live catalog
+ * rather than trusting anything about the runbook match itself — the
+ * same "never trust a derived recommendation, cross-check the catalog"
+ * posture Architecture decision #12 already applies to AI output.
+ */
+async function applyRunbook(incident, resource, match) {
+  const incidentId = incident.id;
+  store.updateIncidentStatus(incidentId, 'INVESTIGATING');
+
+  let realRisk;
+  try {
+    const catalog = await getAgentClient().listTools();
+    realRisk = catalog.find(t => t.name === match.tool)?.risk;
+  } catch (err) {
+    console.error(`[engine] could not resolve risk for runbook tool ${match.tool}:`, err.message);
+  }
+  if (!realRisk) {
+    // The tool the runbook remembers is no longer in the agent's live
+    // catalog (renamed, removed) — fall back to a normal AI diagnosis
+    // rather than proposing something the agent would reject outright.
+    return startInvestigationFromInvestigating(incidentId);
+  }
+
+  const recoveryNote = match.avgRecoveryMs
+    ? `, usually resolving in ~${Math.round(match.avgRecoveryMs / 1000)}s`
+    : '';
+  const diagnosis = {
+    rootCause: `Known fix for a ${incident.trigger_rule} incident: ${match.tool} has resolved this ${match.successes}/${match.total} times before${recoveryNote}. No AI request was used.`,
+    confidence: null,
+    evidence: [],
+    affectedComponents: [],
+    requiresApproval: true,
+    source: 'runbook',
+    successes: match.successes,
+    failures: match.failures,
+    avgRecoveryMs: match.avgRecoveryMs,
+    actions: [{
+      tool: match.tool,
+      params: { [match.paramKey]: resource.external_id },
+      claimedRisk: null,
+      realRisk,
+      rationale: `Known fix — resolved a ${incident.trigger_rule} incident on this resource type ${match.successes}/${match.total} times before, most recently a success. No AI request was used.`
+    }]
+  };
+
+  return applyDiagnosis(incidentId, diagnosis);
+}
+
+/**
+ * Full gather-evidence-then-diagnose pass starting from INVESTIGATING
+ * (not DETECTED) — the shared tail `applyRunbook`'s catalog-miss fallback
+ * needs, since `startInvestigation` itself always begins at DETECTED.
+ */
+async function startInvestigationFromInvestigating(incidentId) {
+  const incident = store.getIncident(incidentId);
+  const evidenceRows = await gatherEvidence(incident);
+  store.addEvidence(incidentId, evidenceRows);
+  return diagnoseWithEvidence(incidentId, evidenceRows);
 }
 
 /**
@@ -168,6 +254,33 @@ async function rediagnose(incidentId) {
   const evidenceRows = store.getEvidence(incidentId).map(e => ({
     resourceId: e.resource_id, sourceTool: e.source_tool, summary: e.summary, data: e.data
   }));
+
+  return diagnoseWithEvidence(incidentId, evidenceRows);
+}
+
+/**
+ * "Ask AI instead" — for when a runbook-only diagnosis isn't trusted
+ * this time. NOT the same as `rediagnose`: that one reuses whatever
+ * evidence already exists, which is correct for its own use case
+ * (re-asking after an approved READ_ONLY investigation action added
+ * evidence), but a runbook-only incident has ZERO evidence rows —
+ * evidence-gathering was exactly what a runbook match skips. This does
+ * the full gather-then-diagnose pass `startInvestigation` would have
+ * done, just from a non-DETECTED starting state.
+ */
+async function forceAiDiagnosis(incidentId) {
+  const incident = store.getIncident(incidentId);
+  if (!incident) throw new Error(`Incident ${incidentId} not found`);
+
+  for (const action of store.getActions(incidentId)) {
+    if (action.status === 'proposed') store.updateActionStatus(action.id, 'superseded');
+  }
+
+  store.updateIncidentStatus(incidentId, 'INVESTIGATING');
+  logEvent('INCIDENT_REDIAGNOSE', `Incident #${incidentId}: asking the AI instead of the matched runbook`);
+
+  const evidenceRows = await gatherEvidence(incident);
+  store.addEvidence(incidentId, evidenceRows);
 
   return diagnoseWithEvidence(incidentId, evidenceRows);
 }
@@ -329,4 +442,4 @@ function dismiss(incidentId) {
   return incident;
 }
 
-module.exports = { startInvestigation, rediagnose, approve, dismiss, maybeAutoRemediate };
+module.exports = { startInvestigation, rediagnose, forceAiDiagnosis, applyRunbook, approve, dismiss, maybeAutoRemediate };

@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 
 // Lazy-load chart library only on Recordings tab
 const SessionReport = lazy(() => import('./SessionReport'));
@@ -58,12 +59,12 @@ export default function Recordings() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {sessions.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-state-icon">⏺</div>
+          <div className="empty-state-icon"><Icon name="circle" size={32} /></div>
           <p>No recordings yet. Use the banner above to start a session.</p>
         </div>
       ) : (
         <div className="card">
-          <div className="card-title">📼 Recording Sessions ({sessions.length})</div>
+          <div className="card-title"><Icon name="hard-drive" /> Recording Sessions ({sessions.length})</div>
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -90,7 +91,7 @@ export default function Recordings() {
                         onClick={e => deleteSession(s.id, e)}
                         title="Delete session"
                       >
-                        ✕
+                        <Icon name="x" size={11} />
                       </button>
                     </td>
                   </tr>

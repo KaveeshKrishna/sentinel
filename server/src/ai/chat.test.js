@@ -334,7 +334,12 @@ test('retryableProviderStatus recognises the transient classes and excludes auth
   for (const status of [400, 401, 403]) {
     assert.equal(retryableProviderStatus(`OpenAI-compatible API error (${status}): x`), false, `status ${status}`);
   }
-  assert.equal(retryableProviderStatus('a network error with no status'), false);
+  // A status-less failure is classified on its text: a transport-level
+  // error (DNS, refused connection, socket hang-up) is exactly the
+  // transient case and IS retried; anything else unrecognised is not.
+  assert.equal(retryableProviderStatus('fetch failed'), true);
+  assert.equal(retryableProviderStatus('ECONNRESET'), true);
+  assert.equal(retryableProviderStatus('the model refused to answer'), false);
   assert.equal(retryableProviderStatus(undefined), false);
 });
 
@@ -445,4 +450,125 @@ test('normalizeSuggestion drops a partial suggestion rather than escalating on i
     normalizeSuggestion({ resourceType: 'service', externalId: 'caddy', summary: 'down' }),
     { resourceType: 'service', externalId: 'caddy', summary: 'down' }
   );
+});
+
+
+// ── Access scope: file tools and local tools ────────────────────────────
+// The two safety gates (chat refuses non-READ_ONLY by registered risk;
+// the agent independently re-checks with approved:false) must still hold
+// now that the catalog has two sources and one of them takes a path.
+
+test('the allowed roots come from Settings, never from the model', async () => {
+  const { setAccessScope } = require('../settings/accessScope');
+  setAccessScope({ paths: ['/var/log'] });
+
+  let received = null;
+  _setClientForTesting({
+    listTools: async () => ([{
+      name: 'read_file', risk: 'READ_ONLY', description: 'read',
+      parameters: { type: 'object', properties: { path: { type: 'string' }, roots: { type: 'array' } } }
+    }]),
+    callTool: async (name, params) => { received = params; return { content: 'hello' }; },
+    verifyTool: async () => ({ ok: true })
+  });
+  // The model tries to widen its own access by naming its own roots.
+  _setProviderForTesting(scriptedProvider([
+    { action: 'tool', tool: 'read_file', params: { path: '/etc/shadow', roots: ['/'] } },
+    { action: 'answer', answer: 'done' }
+  ]).adapter);
+
+  await runChat({ question: 'read something' });
+
+  assert.deepEqual(received.roots, ['/var/log'], "the model's own roots are overwritten by settings");
+  setAccessScope({ paths: [] });
+});
+
+test('with no directories allowed, file tools are still offered but get an empty allowlist', async () => {
+  const { setAccessScope } = require('../settings/accessScope');
+  setAccessScope({ paths: [] });
+
+  let received = null;
+  _setClientForTesting({
+    listTools: async () => ([{
+      name: 'list_directory', risk: 'READ_ONLY', description: 'list',
+      parameters: { type: 'object', properties: { path: { type: 'string' }, roots: { type: 'array' } } }
+    }]),
+    callTool: async (name, params) => { received = params; throw new Error('No filesystem access is configured.'); },
+    verifyTool: async () => ({ ok: true })
+  });
+  _setProviderForTesting(scriptedProvider([
+    { action: 'tool', tool: 'list_directory', params: { path: '/srv' } },
+    { action: 'answer', answer: 'I could not look' }
+  ]).adapter);
+
+  const result = await runChat({ question: 'what is in /srv' });
+  assert.deepEqual(received.roots, [], 'closed by default means the agent refuses, not that we guess');
+  assert.equal(result.toolCalls[0].ok, false);
+});
+
+test('roots are NOT injected into non-file tools, whose schemas forbid extra properties', async () => {
+  const { setAccessScope } = require('../settings/accessScope');
+  setAccessScope({ paths: ['/var/log'] });
+
+  let received = null;
+  _setClientForTesting({
+    listTools: async () => ([{
+      name: 'get_system_metrics', risk: 'READ_ONLY', description: 'metrics',
+      parameters: { type: 'object', properties: {}, additionalProperties: false }
+    }]),
+    callTool: async (name, params) => { received = params; return { cpu: 3 }; },
+    verifyTool: async () => ({ ok: true })
+  });
+  _setProviderForTesting(scriptedProvider([
+    { action: 'tool', tool: 'get_system_metrics', params: {} },
+    { action: 'answer', answer: 'cpu is 3%' }
+  ]).adapter);
+
+  await runChat({ question: 'cpu?' });
+  assert.deepEqual(received, {}, 'an unexpected "roots" would fail the agent\'s strict validation');
+  setAccessScope({ paths: [] });
+});
+
+test("Sentinel's own-data tools are answered locally and never reach the agent", async () => {
+  const { setAccessScope } = require('../settings/accessScope');
+  const recordingDb = require('../recording/db');
+  setAccessScope({ ownData: true });
+  recordingDb.createSession('chat-local-session');
+
+  let agentCalls = 0;
+  _setClientForTesting({
+    listTools: async () => ([]),
+    callTool: async () => { agentCalls++; return {}; },
+    verifyTool: async () => ({ ok: true })
+  });
+  _setProviderForTesting(scriptedProvider([
+    { action: 'tool', tool: 'list_recording_sessions', params: {} },
+    { action: 'answer', answer: 'there is one session' }
+  ]).adapter);
+
+  const result = await runChat({ question: 'what recordings are there?' });
+  assert.equal(agentCalls, 0, 'a question about our own rows must not touch the privileged process');
+  assert.equal(result.toolCalls[0].ok, true);
+  assert.match(result.toolCalls[0].summary, /chat-local-session/);
+});
+
+test('a mutating file-ish tool name is still refused by risk, not by name', async () => {
+  // The gate is the *registered* risk, so a hypothetical future
+  // write_file would be refused without this list needing updating.
+  let agentCalls = 0;
+  _setClientForTesting({
+    listTools: async () => ([{
+      name: 'write_file', risk: 'HIGH_RISK', description: 'writes',
+      parameters: { type: 'object', properties: { path: { type: 'string' } } }
+    }]),
+    callTool: async () => { agentCalls++; return {}; },
+    verifyTool: async () => ({ ok: true })
+  });
+  _setProviderForTesting(scriptedProvider([
+    { action: 'tool', tool: 'write_file', params: { path: '/etc/passwd' } },
+    { action: 'answer', answer: 'refused' }
+  ]).adapter);
+
+  await runChat({ question: 'change something' });
+  assert.equal(agentCalls, 0, 'chat must never send a non-READ_ONLY tool to the agent');
 });

@@ -48,7 +48,7 @@ export default function AutoRemediateSettings() {
     }
   }
 
-  if (loading) return <div className="card"><div className="boot-spinner" /></div>;
+  if (loading) return <div className="boot-spinner" />;
   if (!policy) return null;
 
   const dirty = JSON.stringify([...selected].sort()) !== JSON.stringify([...policy.resources].sort());
@@ -57,9 +57,8 @@ export default function AutoRemediateSettings() {
   const orphans = policy.resources.filter(k => !resources.some(r => `${r.type}:${r.external_id}` === k));
 
   return (
-    <div className="card">
-      <div className="card-title">🩹 Auto-Remediation</div>
-      <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: 4 }}>
+    <div>
+      <p className="settings-help" style={{ marginBottom: 4 }}>
         Normally every AI-recommended action waits for you to click approve. For the resources ticked
         below, Sentinel will run a <strong>restorative</strong> action by itself — start or restart —
         then verify it worked, exactly as if you had approved it. If a service goes inactive or a

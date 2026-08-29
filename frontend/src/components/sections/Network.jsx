@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 import { useMetrics } from '../../hooks/useWebSocket';
 import Sparkline from '../shared/Sparkline';
 
@@ -49,7 +50,7 @@ export default function Network() {
 
       {/* Live bandwidth */}
       <div className="card">
-        <div className="card-title">📡 Live Bandwidth ({primary || 'eth0'})</div>
+        <div className="card-title"><Icon name="radio" /> Live Bandwidth ({primary || 'eth0'})</div>
         <div className="section-grid-2">
           <div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 4 }}>Upload</div>
@@ -75,7 +76,7 @@ export default function Network() {
       {/* Network info */}
       <div className="section-grid-2">
         <div className="card">
-          <div className="card-title">🌍 IP Addresses</div>
+          <div className="card-title"><Icon name="globe" /> IP Addresses</div>
           <InfoRow k="LAN IP"    v={stats?.lanIp || '—'} />
           <InfoRow k="Public IP" v={stats?.publicIp || '—'} />
           <div style={{ marginTop: 12 }}>
@@ -93,7 +94,7 @@ export default function Network() {
         </div>
 
         <div className="card">
-          <div className="card-title">📊 Caddy Analytics (last 5 min)</div>
+          <div className="card-title"><Icon name="bar-chart" /> Caddy Analytics (last 5 min)</div>
           {stats?.caddy?.available ? (
             <>
               <InfoRow k="Requests/min"     v={stats.caddy.requestsPerMinute} />
@@ -131,7 +132,7 @@ export default function Network() {
       {/* All interfaces */}
       {Object.keys(ifaces).length > 0 && (
         <div className="card">
-          <div className="card-title">🔌 Network Interfaces</div>
+          <div className="card-title"><Icon name="plug" /> Network Interfaces</div>
           <div className="table-wrap">
             <table className="data-table">
               <thead>

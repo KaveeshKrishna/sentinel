@@ -12,19 +12,23 @@ const { redact } = require('./redact');
  * Extracted from ai/orchestrator.js (where it was private) so the chat
  * and post-incident-report paths record identically rather than growing
  * their own INSERTs. `purpose` is free text in the schema; in use it is
- * 'diagnosis' | 'chat' | 'report'.
+ * 'diagnosis' | 'chat' | 'report'. `credentialId` names which
+ * `ai_credentials` row made the call — this is what the per-credential
+ * RPM/RPD budgets are counted from (settings/aiCredentials.js), so it
+ * must be set on every real provider round trip or a limit silently
+ * stops being enforced.
  *
  * Both the request summary and the raw response are redacted before they
  * are written — this table is read back by scripts/ai-runs.js and by the
  * incident timeline.
  */
-function recordAiRun({ incidentId, purpose, provider, model, attempt, requestSummary, rawResponse, parsedJson, error, usage, latencyMs }) {
+function recordAiRun({ incidentId, purpose, provider, model, credentialId, attempt, requestSummary, rawResponse, parsedJson, error, usage, latencyMs }) {
   getDb().prepare(`
-    INSERT INTO ai_runs (incident_id, purpose, provider, model, attempt, request_summary, raw_response,
+    INSERT INTO ai_runs (incident_id, purpose, provider, model, credential_id, attempt, request_summary, raw_response,
                           parsed_json, error, prompt_tokens, completion_tokens, latency_ms, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    incidentId ?? null, purpose, provider, model, attempt,
+    incidentId ?? null, purpose, provider, model, credentialId ?? null, attempt,
     requestSummary ? redact(requestSummary) : null,
     rawResponse ? redact(rawResponse) : null,
     parsedJson ? JSON.stringify(parsedJson) : null,

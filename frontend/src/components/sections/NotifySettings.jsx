@@ -90,9 +90,8 @@ export default function NotifySettings() {
   if (!config) return null;
 
   return (
-    <div className="card">
-      <div className="card-title">🔔 Notifications</div>
-      <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 14 }}>
+    <div>
+      <p className="settings-help">
         Push incident events to a channel so Sentinel pages you instead of waiting to be watched.
       </p>
 

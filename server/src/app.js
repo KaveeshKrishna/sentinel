@@ -24,6 +24,7 @@ const toolsRoutes        = require('./routes/tools');
 const resourcesRoutes    = require('./routes/resources');
 const chatRoutes         = require('./routes/chat');
 const approveRoutes      = require('./routes/approve');
+const healthRoutes       = require('./routes/health');
 
 /**
  * Build the Express app. Split out from server.js (which additionally
@@ -84,6 +85,7 @@ function createApp() {
   app.use('/api/tools',       authMiddleware, toolsRoutes);
   app.use('/api/resources',   authMiddleware, resourcesRoutes);
   app.use('/api/chat',        authMiddleware, chatRoutes);
+  app.use('/api/health',      authMiddleware, healthRoutes);
 
   // ── Frontend static files ────────────────────────────────────────────────
   const frontendDist = path.join(__dirname, '../public');

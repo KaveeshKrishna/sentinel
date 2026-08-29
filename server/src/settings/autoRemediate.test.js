@@ -61,6 +61,11 @@ test('destructive and non-restorative tools are never auto-remediable, however r
   assert.equal(isToolAutoRemediable('stop_container', 'READ_ONLY'), false);
   assert.equal(isToolAutoRemediable('deploy_repository', 'MEDIUM_RISK'), false);
   assert.equal(isToolAutoRemediable('prune_images', 'DESTRUCTIVE'), false);
+  // A rollback deploys different code just as much as a forward deploy
+  // does — it must never run unattended, at any risk label, sibling to
+  // the deploy_repository assertion above.
+  assert.equal(isToolAutoRemediable('rollback_repository', 'MEDIUM_RISK'), false);
+  assert.equal(isToolAutoRemediable('rollback_repository', 'LOW_RISK'), false);
 });
 
 test('a restorative tool above the risk ceiling is still refused', () => {

@@ -455,3 +455,134 @@ test('the canonical restart is NOT used for a resource that is not opted in', as
   assert.equal(calls.includes('restart_service'), false);
   assert.equal(result.status, 'DIAGNOSED');
 });
+
+// ── applyRunbook (Feature 2) ──────────────────────────────────────────────
+
+test('applyRunbook proposes the matched tool and leaves the incident at AWAITING_APPROVAL for a non-opted-in resource', async () => {
+  _setClientForTesting(fakeAgent());
+  const resource = upsertResource({ type: 'container', externalId: 'rb-engine-' + crypto.randomUUID(), name: 'x' });
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+
+  const match = { tool: 'restart_container', paramKey: 'id', successes: 3, failures: 0, total: 3, avgRecoveryMs: 4200 };
+  const updated = await engine.applyRunbook(incident, resource, match);
+
+  assert.equal(updated.status, 'AWAITING_APPROVAL');
+  assert.equal(updated.diagnosis.source, 'runbook');
+  assert.equal(updated.diagnosis.successes, 3);
+  assert.match(updated.diagnosis.rootCause, /3\/3/);
+
+  const action = store.getActions(incident.id)[0];
+  assert.equal(action.tool_name, 'restart_container');
+  assert.deepEqual(action.params, { id: resource.external_id });
+  assert.equal(action.real_risk, 'MEDIUM_RISK'); // resolved from the fake catalog, not trusted blindly
+});
+
+test('applyRunbook for an opted-in resource auto-remediates through the normal gates, with zero AI calls', async () => {
+  // Deliberately no AI provider configured for this one (beforeEach sets
+  // one) — otherwise a RESOLVED outcome fires the unrelated
+  // post-incident-report generation, a legitimate separate AI call this
+  // test isn't about, and it would pollute the chatCalls count below.
+  clearAIConfig();
+  const { setAutoRemediateList } = require('../settings/autoRemediate');
+  let calls = [];
+  _setClientForTesting({
+    listTools: async () => FAKE_CATALOG,
+    callTool: async (name) => { calls.push(name); return {}; },
+    verifyTool: async () => ({ ok: true })
+  });
+  let chatCalls = 0;
+  _setProviderForTesting({ chat: async () => { chatCalls++; return { text: '{}', usage: {} }; } });
+
+  const resource = upsertResource({ type: 'container', externalId: 'rb-auto-' + crypto.randomUUID(), name: 'x' });
+  setAutoRemediateList([`container:${resource.external_id}`]);
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+
+  const match = { tool: 'restart_container', paramKey: 'id', successes: 2, failures: 0, total: 2, avgRecoveryMs: null };
+  const updated = await engine.applyRunbook(incident, resource, match);
+
+  assert.equal(calls.includes('restart_container'), true, 'auto-remediation ran the runbook-proposed action through the exact same path as an AI proposal');
+  assert.equal(chatCalls, 0, 'a runbook match never spends a provider request, opted-in or not');
+  assert.ok(['VERIFYING', 'RESOLVED', 'FAILED'].includes(updated.status));
+
+  setAutoRemediateList([]);
+});
+
+test("applyRunbook falls back to a full AI diagnosis if the runbook's tool is no longer in the agent's catalog", async () => {
+  _setClientForTesting({
+    listTools: async () => ([{ name: 'get_container_status', description: 'x', risk: 'READ_ONLY', parameters: {} }]),
+    callTool: async () => ({ status: 'ok' }),
+    verifyTool: async () => ({ ok: true })
+  });
+  let chatCalls = 0;
+  _setProviderForTesting({
+    chat: async () => {
+      chatCalls++;
+      return { text: JSON.stringify({ rootCause: 'diagnosed for real', recommendedActions: [] }), usage: {} };
+    }
+  });
+
+  const resource = upsertResource({ type: 'container', externalId: 'rb-gone-' + crypto.randomUUID(), name: 'x' });
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+
+  // Names a tool no longer registered — simulates a runbook remembering a
+  // tool that has since been renamed or removed.
+  const match = { tool: 'restart_container_v1_removed', paramKey: 'id', successes: 5, failures: 0, total: 5, avgRecoveryMs: null };
+  const updated = await engine.applyRunbook(incident, resource, match);
+
+  assert.equal(chatCalls, 1, 'falls through to a real diagnosis rather than proposing an unregistered tool');
+  assert.equal(updated.root_cause, 'diagnosed for real');
+  assert.notEqual(updated.diagnosis?.source, 'runbook');
+});
+
+// ── forceAiDiagnosis ("Ask AI instead") ──────────────────────────────────
+
+test('forceAiDiagnosis gathers fresh evidence and re-diagnoses a runbook-only incident (which has none)', async () => {
+  let statusCalls = 0;
+  _setClientForTesting({
+    listTools: async () => FAKE_CATALOG,
+    callTool: async (name) => { if (name === 'get_container_status') statusCalls++; return { status: 'ok' }; },
+    verifyTool: async () => ({ ok: true })
+  });
+  _setProviderForTesting({
+    chat: async () => ({
+      text: JSON.stringify({ rootCause: 'the AI\'s own answer', recommendedActions: [] }), usage: {}
+    })
+  });
+
+  const resource = upsertResource({ type: 'container', externalId: 'force-ai-' + crypto.randomUUID(), name: 'x' });
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+  const match = { tool: 'restart_container', paramKey: 'id', successes: 4, failures: 0, total: 4, avgRecoveryMs: null };
+  const runbookResult = await engine.applyRunbook(incident, resource, match);
+  assert.equal(store.getEvidence(incident.id).length, 0, 'a runbook match gathers no evidence, by design');
+  assert.equal(runbookResult.diagnosis.source, 'runbook');
+
+  const forced = await engine.forceAiDiagnosis(incident.id);
+
+  assert.equal(forced.root_cause, "the AI's own answer");
+  assert.notEqual(forced.diagnosis?.source, 'runbook');
+  assert.ok(statusCalls > 0, 'evidence was actually gathered this time, unlike the runbook path');
+  assert.equal(store.getActions(incident.id).find(a => a.tool_name === 'restart_container').status, 'superseded');
+});
+
+test('forceAiDiagnosis works from AWAITING_APPROVAL too (not only DIAGNOSED)', async () => {
+  const { setAutoRemediateList } = require('../settings/autoRemediate');
+  _setClientForTesting({
+    listTools: async () => FAKE_CATALOG,
+    callTool: async () => ({ status: 'ok' }),
+    verifyTool: async () => ({ ok: true })
+  });
+  _setProviderForTesting({
+    chat: async () => ({ text: JSON.stringify({ rootCause: 'fresh answer', recommendedActions: [] }), usage: {} })
+  });
+
+  const resource = upsertResource({ type: 'container', externalId: 'force-ai-awaiting-' + crypto.randomUUID(), name: 'x' });
+  const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'container_exit', triggerSummary: 'exited' });
+  // Not opted in, so applyRunbook leaves this at AWAITING_APPROVAL.
+  const match = { tool: 'restart_container', paramKey: 'id', successes: 2, failures: 0, total: 2, avgRecoveryMs: null };
+  const runbookResult = await engine.applyRunbook(incident, resource, match);
+  assert.equal(runbookResult.status, 'AWAITING_APPROVAL');
+
+  const forced = await engine.forceAiDiagnosis(incident.id);
+  assert.equal(forced.root_cause, 'fresh answer');
+  setAutoRemediateList([]);
+});

@@ -9,7 +9,12 @@ const {
   AUTO_REMEDIABLE_TOOLS, MAX_AUTO_RISK, MAX_AUTO_PER_WINDOW
 } = require('../settings/autoRemediate');
 const { getProvider } = require('../ai/provider');
+const {
+  listCredentials, getCredential, getCredentialSecret, addCredential, updateCredential,
+  deleteCredential, reorderCredentials, recordFailure, recordSuccess
+} = require('../settings/aiCredentials');
 const { getNotifyConfig, setNotifyConfig, clearNotifyConfig } = require('../settings/notifyConfig');
+const { getAccessScope, setAccessScope, MAX_PATHS } = require('../settings/accessScope');
 const { sendTestNotification } = require('../notify');
 
 // Detector tuning — cooldown, sustain windows, CPU/RAM/disk thresholds.
@@ -82,6 +87,100 @@ router.post('/notify/test', async (_req, res) => {
     res.json({ ok: true, results: await sendTestNotification() });
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+// How much of this host Ask Sentinel may look at. `ownData` covers
+// Sentinel's own records (recordings/incidents/activity); `paths` is an
+// allowlist of host directories the agent's read-only file tools may
+// look inside, empty by default. The invariants that hold regardless of
+// what is set here (never a key, never /etc/sentinel, never a write)
+// live in the agent — see agent/src/tools/files.js.
+router.get('/access', (_req, res) => {
+  res.json({ ...getAccessScope(), maxPaths: MAX_PATHS });
+});
+
+router.put('/access', (req, res) => {
+  const { ownData, paths } = req.body || {};
+  try {
+    res.json({ ...setAccessScope({ ownData, paths }), maxPaths: MAX_PATHS });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ── AI credentials ────────────────────────────────────────────────────
+// An ordered pool, tried in listed order on every AI call (ai/failover.js).
+// The raw key is never returned — only its last 4 characters — and each
+// row carries the reason it last failed, so the Settings page can explain
+// why a credential is being skipped without the operator reading logs.
+router.get('/ai/credentials', (_req, res) => {
+  res.json({ credentials: listCredentials(), providers: PROVIDERS });
+});
+
+router.post('/ai/credentials', (req, res) => {
+  const { label, provider, model, baseUrl, apiKey, enabled, rpmLimit, rpdLimit } = req.body || {};
+  try {
+    res.status(201).json(addCredential({ label, provider, model, baseUrl, apiKey, enabled, rpmLimit, rpdLimit }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Failover order. Sent as the full list of ids, first tried first.
+router.put('/ai/credentials/order', (req, res) => {
+  try {
+    res.json({ credentials: reorderCredentials((req.body || {}).ids) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.put('/ai/credentials/:id', (req, res) => {
+  const { label, provider, model, baseUrl, apiKey, enabled, rpmLimit, rpdLimit } = req.body || {};
+  try {
+    res.json(updateCredential(Number(req.params.id), { label, provider, model, baseUrl, apiKey, enabled, rpmLimit, rpdLimit }));
+  } catch (err) {
+    res.status(/^No AI credential/.test(err.message) ? 404 : 400).json({ error: err.message });
+  }
+});
+
+router.delete('/ai/credentials/:id', (req, res) => {
+  if (!deleteCredential(Number(req.params.id))) {
+    return res.status(404).json({ error: 'No such AI credential' });
+  }
+  res.json({ ok: true, credentials: listCredentials() });
+});
+
+// Test one specific credential, using its own stored key. Updates that
+// row's health so a failure is visible on the page after a reload, not
+// just in this response.
+router.post('/ai/credentials/:id/test', async (req, res) => {
+  const id = Number(req.params.id);
+  const credential = getCredential(id);
+  if (!credential) return res.status(404).json({ error: 'No such AI credential' });
+
+  // Deliberately not listUsableCredentials(): a *disabled* credential is
+  // still testable, which is how an operator validates a replacement key
+  // before putting it back in the failover chain.
+  const usable = getCredentialSecret(id);
+  if (!usable) {
+    const msg = 'This credential could not be decrypted — re-enter its API key';
+    recordFailure(id, msg);
+    return res.status(400).json({ ok: false, error: msg });
+  }
+
+  try {
+    const result = await getProvider(usable.provider).chat({
+      system: 'Reply with exactly one word: OK',
+      messages: [{ role: 'user', content: 'Reply with exactly one word: OK' }],
+      apiKey: usable.apiKey, model: usable.model, baseUrl: usable.baseUrl
+    });
+    recordSuccess(id);
+    res.json({ ok: true, sample: (result.text || '').slice(0, 50), credential: getCredential(id) });
+  } catch (err) {
+    recordFailure(id, err.message);
+    res.status(502).json({ ok: false, error: err.message, credential: getCredential(id) });
   }
 });
 

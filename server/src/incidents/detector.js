@@ -1,15 +1,17 @@
 'use strict';
 
 const { getAgentClient } = require('../agent/client');
-const { upsertResource } = require('../graph/resources');
+const { upsertResource, getResource } = require('../graph/resources');
 const { getDependents } = require('../graph/relationships');
 const { discoverComposeEdges } = require('../graph/discovery');
 const store = require('./store');
 const { isSuppressed } = require('./suppression');
-const { startInvestigation, rediagnose, maybeAutoRemediate } = require('./engine');
+const { startInvestigation, rediagnose, maybeAutoRemediate, applyRunbook } = require('./engine');
+const { findRunbookForIncident } = require('./runbooks');
 const { logEvent } = require('../activity/logger');
 const { notifyIncident } = require('../notify');
 const { getAIConfig } = require('../settings/aiConfig');
+const { isResourceEnabled } = require('../settings/autoRemediate');
 const { getDetectorConfig } = require('../settings/detectorConfig');
 const { countDiagnosisAttempts } = require('../ai/orchestrator');
 
@@ -51,10 +53,57 @@ async function raiseIncident({ resourceRef, severity, triggerRule, triggerSummar
   logEvent('INCIDENT_DETECTED', `Incident #${incident.id}: ${triggerSummary}`);
   notifyIncident('INCIDENT_DETECTED', incident.id);
 
+  // A learned runbook costs nothing to check (a DB read, no agent call,
+  // no provider request) and runs unconditionally — regardless of
+  // shouldAutoDiagnose's opt-in gate below, which exists specifically to
+  // protect provider quota. "For common problems it should not rely on
+  // AI anyway": a tool that has already resolved this exact
+  // (trigger_rule, resource_type) pair at least twice, with no more
+  // recent failure, is proposed directly. Still requires the normal
+  // human approval click unless the resource is ALSO opted into
+  // auto-remediation — a runbook changes WHAT gets proposed and HOW
+  // CHEAPLY, never WHETHER a human approves it.
+  const runbook = findRunbookForIncident(incident, resource);
+  if (runbook) {
+    applyRunbook(incident, resource, runbook).catch(err => console.error('[detector] runbook apply error:', err.message));
+    return;
+  }
+
+  // Detection is free; diagnosis costs a provider request. Only a
+  // resource the operator has explicitly opted into auto-remediation is
+  // diagnosed automatically — see shouldAutoDiagnose. Everything else
+  // stays at DETECTED until a human clicks Diagnose.
+  if (!shouldAutoDiagnose(resource)) return;
+
   // Fire-and-forget — the detector tick must not block on a full
   // diagnosis round trip; failures are handled inside startInvestigation
   // itself (malformed AI output leaves the incident at INVESTIGATING).
   startInvestigation(incident.id).catch(err => console.error('[detector] investigation error:', err.message));
+}
+
+/**
+ * Whether an incident should be sent to the AI without a human asking.
+ *
+ * Deliberately the SAME opt-in list auto-remediation uses, not a second
+ * setting: a resource the operator has said Sentinel may fix by itself
+ * is exactly the one where an unattended diagnosis is worth a request,
+ * and everything else can wait for a person who is already looking at it.
+ *
+ * Detection is unaffected — every incident is still raised, with full
+ * evidence gathering available on demand. What this gates is only the
+ * automatic *provider call*, which on a free tier is the scarce resource
+ * (the Gemini tier this install uses allows 20 requests/day; a handful of
+ * container exits during routine work could previously consume all of
+ * them before anyone read the first diagnosis).
+ */
+function shouldAutoDiagnose(resource) {
+  return isResourceEnabled(resource.type, resource.external_id);
+}
+
+/** shouldAutoDiagnose for an incident row, whose resource must be looked up. */
+function autoDiagnosable(incident) {
+  const resource = getResource(incident.resource_id);
+  return !!resource && shouldAutoDiagnose(resource);
 }
 
 async function checkContainerEvents(agent) {
@@ -100,6 +149,21 @@ async function checkContainerHealth(agent) {
   const seen = new Set();
   for (const c of containers) {
     seen.add(c.name);
+
+    // Opportunistic sync of compose project/service labels, reusing the
+    // container list already fetched for the edge discovery above — no
+    // extra agent call. This is what lets an incident on this container
+    // later be correlated with a deploy to its repo (deploy correlation
+    // matches on `resources.metadata_json->composeProject` against
+    // `deployments.repo_name`). Passing `metadata: undefined` here would
+    // silently disable the correlation for any container with no compose
+    // labels, so only pass it when at least one label is actually present.
+    if (c.composeProject || c.composeService) {
+      upsertResource({
+        type: 'container', externalId: c.name, name: c.name,
+        metadata: { composeProject: c.composeProject || null, composeService: c.composeService || null }
+      });
+    }
     if (c.health !== 'unhealthy') {
       unhealthyStreaks.delete(c.name);
       continue;
@@ -189,6 +253,11 @@ async function checkStuckInvestigations() {
   if (!getAIConfig().configured) return;
   const stuck = store.findStuckInvestigations(STUCK_RETRY_BASE_MS);
   for (const incident of stuck) {
+    // Same gate as raiseIncident: an unattended retry is still an
+    // unattended provider call. A non-opted-in incident that failed to
+    // diagnose waits for a human to press Diagnose rather than retrying
+    // against a quota nobody asked it to spend.
+    if (!autoDiagnosable(incident)) continue;
     const attempts = countDiagnosisAttempts(incident.id);
     const backoff = Math.min(STUCK_RETRY_MAX_MS, STUCK_RETRY_BASE_MS * 2 ** attempts);
     if (Date.now() - incident.updated_at < backoff) continue;
@@ -237,6 +306,7 @@ async function checkAutoRemediation() {
 async function checkStaleWaitingIncidents() {
   if (!getAIConfig().configured) return;
   for (const incident of store.findWaitingIncidents(STALE_WAITING_MS)) {
+    if (!autoDiagnosable(incident)) continue;
     const attempts = countDiagnosisAttempts(incident.id);
     const backoff = Math.min(STUCK_RETRY_MAX_MS, STALE_WAITING_MS * 2 ** Math.max(0, attempts - 1));
     if (Date.now() - incident.updated_at < backoff) continue;
@@ -291,7 +361,7 @@ function _resetForTesting() {
 }
 
 module.exports = {
-  startIncidentDetection, stopIncidentDetection, tick,
+  startIncidentDetection, stopIncidentDetection, tick, raiseIncident, shouldAutoDiagnose,
   checkContainerEvents, checkContainerHealth, checkServices, checkSystemMetrics, checkStuckInvestigations,
   checkAutoRemediation, checkStaleWaitingIncidents,
   _resetForTesting

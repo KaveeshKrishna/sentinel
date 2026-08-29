@@ -4,6 +4,8 @@ const { getResource } = require('../graph/resources');
 const { getNeighbours } = require('../graph/relationships');
 const { callToolAudited } = require('../incidents/toolCallAudit');
 const { redact } = require('../ai/redact');
+const { buildDeployCorrelationEvidence } = require('./deployCorrelation');
+const { getDetectorConfig } = require('../settings/detectorConfig');
 
 const LOG_TAIL = 50;
 const MAX_EVIDENCE_ROWS = 12;
@@ -41,6 +43,18 @@ function toolsForType(type, resource) {
 async function gatherEvidence(incident) {
   const resource = getResource(incident.resource_id);
   const rows = [];
+
+  // Computed FIRST and exempt from MAX_EVIDENCE_ROWS below (it's seeded
+  // into `rows` before anything else can fill the cap) — a deploy
+  // correlation is the highest-value single piece of evidence this whole
+  // feature exists to surface, and must never be the row silently
+  // dropped because 12 slots were already used by routine container
+  // status/log evidence. Pure DB read, no agent call, so it costs
+  // nothing to compute even when nothing is found.
+  const deployEvidence = buildDeployCorrelationEvidence(
+    resource, incident, getDetectorConfig().deployCorrelationWindowMs
+  );
+  if (deployEvidence) rows.push(deployEvidence);
 
   const collect = async (targetResource) => {
     if (!targetResource) return;

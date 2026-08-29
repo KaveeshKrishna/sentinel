@@ -100,6 +100,49 @@ router.delete('/:id', (req, res) => {
   res.json({ deleted });
 });
 
+// Diagnose on demand.
+//
+// Incidents are no longer diagnosed automatically unless their resource
+// is opted into auto-remediation (see incidents/detector.js's
+// shouldAutoDiagnose) — detection is free, a provider call is not, and a
+// free tier's daily allowance is easily spent by routine container churn
+// nobody was watching. This is the button that spends one deliberately.
+router.post('/:id/diagnose', async (req, res) => {
+  const incidentId = Number(req.params.id);
+  const incident = store.getIncident(incidentId);
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+
+  try {
+    // An incident that never left DETECTED has gathered no evidence yet,
+    // so it needs the full investigate-then-diagnose pass; one that has
+    // been round this loop before only needs re-diagnosing against what
+    // is already known.
+    res.json(incident.status === 'DETECTED'
+      ? await engine.startInvestigation(incidentId)
+      : await engine.rediagnose(incidentId));
+  } catch (err) {
+    if (err.name === 'IllegalTransitionError') return res.status(409).json({ error: err.message });
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// "Ask AI instead" — for when a runbook-matched diagnosis isn't trusted
+// this time. Deliberately NOT the same as /diagnose's non-DETECTED branch
+// (rediagnose, which reuses whatever evidence already exists): a
+// runbook-only incident has ZERO evidence rows, since evidence-gathering
+// is exactly what a runbook match skips (incidents/runbooks.js). This
+// route runs the full gather-then-diagnose pass instead.
+router.post('/:id/ai-diagnose', async (req, res) => {
+  const incidentId = Number(req.params.id);
+  if (!store.getIncident(incidentId)) return res.status(404).json({ error: 'Incident not found' });
+  try {
+    res.json(await engine.forceAiDiagnosis(incidentId));
+  } catch (err) {
+    if (err.name === 'IllegalTransitionError') return res.status(409).json({ error: err.message });
+    res.status(502).json({ error: err.message });
+  }
+});
+
 // Re-run diagnosis against all evidence gathered so far — including the
 // output of any approved READ_ONLY investigation action. This is how a
 // "I can't tell from this, show me the logs" diagnosis gets turned into

@@ -8,6 +8,8 @@ const store = require('../incidents/store');
 const engine = require('../incidents/engine');
 const { upsertResource } = require('../graph/resources');
 const { logEvent } = require('../activity/logger');
+const chatRuns = require('../ai/chatRuns');
+const { publish } = require('../events/publish');
 
 const RESOURCE_TYPES = ['container', 'service', 'website', 'host'];
 
@@ -98,8 +100,15 @@ router.post('/', async (req, res) => {
   let session = req.body.sessionId ? chatStore.getSession(Number(req.body.sessionId)) : null;
   if (!session) session = chatStore.createSession(message.trim());
 
+  // One turn at a time per session, so two tabs can't interleave answers
+  // into the same conversation.
+  if (chatRuns.isRunning(session.id)) {
+    return res.status(409).json({ error: 'This conversation is already thinking — stop it first' });
+  }
+
+  const question = message.trim();
   const history = chatStore.getMessages(session.id).map(m => ({ role: m.role, content: m.content }));
-  chatStore.addMessage(session.id, { role: 'user', content: message.trim() });
+  chatStore.addMessage(session.id, { role: 'user', content: question });
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -109,19 +118,6 @@ router.post('/', async (req, res) => {
   res.on('error', () => {});
   res.flushHeaders();
 
-  // res.on('close') fires both on a normal finish and on the client
-  // hanging up early — writableEnded is what tells those apart. Checked
-  // between chat.js's steps so an abandoned turn stops spending provider
-  // quota and agent tool calls the moment nobody is listening, instead
-  // of continuing to completion in the background (observed live:
-  // reopening a session after its stream had already errored out showed
-  // an extra tool call and a final answer that ran after the browser
-  // had already given up).
-  let clientGone = false;
-  res.on('close', () => {
-    if (!res.writableEnded) clientGone = true;
-  });
-
   const keepalive = setInterval(() => {
     if (!res.writableEnded) {
       try { res.write(': keepalive\n\n'); } catch { /* connection already gone */ }
@@ -130,46 +126,95 @@ router.post('/', async (req, res) => {
 
   const send = (type, data) => {
     if (res.writableEnded) return;
-    try { res.write(`data: ${JSON.stringify({ type, ...data, ts: Date.now() })}\n\n`); } catch { /* connection already gone */ }
+    try { res.write(`data: ${JSON.stringify({ type, ...data, ts: Date.now() })}\n\n`); } catch { /* gone */ }
   };
 
   send('session', { sessionId: session.id, title: session.title });
 
+  // The turn is registered BEFORE the await, so a Stop arriving while
+  // the first provider call is in flight still finds something to cancel.
+  const run = chatRuns.start(session.id, question);
+
   try {
     const { answer, toolCalls, suggestedIncident, cancelled } = await runChat({
-      question: message.trim(),
+      question,
       history,
       onEvent: send,
-      isCancelled: () => clientGone
+      // Only an explicit Stop ends a turn early now. The browser going
+      // away does not: the answer is persisted and announced regardless,
+      // so asking something and navigating elsewhere no longer throws
+      // away the work (and the provider request already paid for).
+      isCancelled: () => run.cancelled
     });
-    if (!cancelled) {
+
+    if (cancelled) {
+      chatStore.addMessage(session.id, {
+        role: 'assistant',
+        content: toolCalls.length > 0
+          ? '(stopped — here is what had been gathered)'
+          : '(stopped before anything ran)',
+        toolCalls: toolCalls.length > 0 ? { calls: toolCalls, suggestedIncident: null } : null
+      });
+      send('stopped', {});
+    } else {
       chatStore.addMessage(session.id, {
         role: 'assistant',
         content: answer,
         toolCalls: toolCalls.length > 0 || suggestedIncident ? { calls: toolCalls, suggestedIncident } : null
       });
-    } else if (toolCalls.length > 0) {
-      // Still worth persisting what was gathered before the connection
-      // died, so reopening the session shows a true partial state
-      // instead of either nothing or a turn that quietly kept running.
-      chatStore.addMessage(session.id, {
-        role: 'assistant',
-        content: '(connection interrupted before this finished)',
-        toolCalls: { calls: toolCalls, suggestedIncident: null }
+      // Announced whether or not this stream is still attached — that is
+      // the whole point of the turn outliving its connection. The client
+      // uses it to toast an answer that landed on a conversation the
+      // operator has since navigated away from.
+      publish('chat', {
+        event: 'answered',
+        sessionId: session.id,
+        title: session.title,
+        question,
+        preview: (answer || '').slice(0, 160)
       });
     }
   } catch (err) {
     // The turn's own error surfaces in the stream (the response has
-    // already been committed with a 200, so a status code can't).
+    // already been committed with a 200, so a status code can't) and, for
+    // an operator who has navigated away, as a pushed event.
     send('error', { message: err.message });
+    chatStore.addMessage(session.id, {
+      role: 'assistant',
+      content: `(failed: ${err.message})`,
+      toolCalls: null
+    });
+    publish('chat', {
+      event: 'failed', sessionId: session.id, title: session.title, question, error: err.message
+    });
   } finally {
     clearInterval(keepalive);
+    chatRuns.finish(session.id);
   }
 
   if (!res.writableEnded) {
     try { res.write('event: done\ndata: {}\n\n'); } catch { /* connection already gone */ }
     res.end();
   }
+});
+
+/**
+ * Stop a turn that is currently thinking.
+ *
+ * This is now the ONLY way a turn ends early — navigating away doesn't.
+ * It takes effect at the next step boundary (between a provider call and
+ * the tool call it asked for), so an in-flight HTTP request to the
+ * provider still completes; what it prevents is the next one.
+ */
+router.post('/sessions/:id/stop', (req, res) => {
+  const sessionId = Number(req.params.id);
+  if (!chatStore.getSession(sessionId)) return res.status(404).json({ error: 'Session not found' });
+  res.json({ stopped: chatRuns.cancel(sessionId) });
+});
+
+/** Which conversations are mid-thought, so a reopened UI shows it. */
+router.get('/running', (_req, res) => {
+  res.json({ running: chatRuns.listRunning() });
 });
 
 module.exports = router;

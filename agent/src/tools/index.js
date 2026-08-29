@@ -7,6 +7,7 @@ const registerStorageTools = require('./storage');
 const registerProcessTools = require('./process');
 const registerNetworkTools = require('./network');
 const registerGitTools = require('./git');
+const registerFileTools = require('./files');
 
 /** Register the full Phase-1 tool set against a ToolRegistry instance. */
 module.exports = function registerAllTools(registry) {
@@ -17,4 +18,5 @@ module.exports = function registerAllTools(registry) {
   registerProcessTools(registry);
   registerNetworkTools(registry);
   registerGitTools(registry);
+  registerFileTools(registry);
 };

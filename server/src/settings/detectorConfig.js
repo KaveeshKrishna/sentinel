@@ -24,7 +24,13 @@ const DEFAULTS = Object.freeze({
   resourceStreak: 3,             // consecutive polls CPU/RAM must stay over threshold
   cpuThresholdPercent: 90,
   ramThresholdPercent: 90,
-  diskThresholdPercent: 90
+  diskThresholdPercent: 90,
+  // How far back to look for a deploy to the same repo when gathering
+  // evidence for an incident (context/deployCorrelation.js). Too short
+  // and a deploy that broke something slowly (a bad migration, a cache
+  // warm-up) won't be found; too long and unrelated deploys start
+  // looking causally relevant.
+  deployCorrelationWindowMs: 15 * 60 * 1000
 });
 
 /** Per-field bounds. A 0ms cooldown or a 1-poll streak turns the detector into a firehose. */
@@ -34,7 +40,8 @@ const LIMITS = Object.freeze({
   resourceStreak: { min: 1, max: 60 },
   cpuThresholdPercent: { min: 1, max: 100 },
   ramThresholdPercent: { min: 1, max: 100 },
-  diskThresholdPercent: { min: 1, max: 100 }
+  diskThresholdPercent: { min: 1, max: 100 },
+  deployCorrelationWindowMs: { min: 60000, max: 24 * 60 * 60 * 1000 }
 });
 
 const settingKey = (field) => `detector.${field}`;

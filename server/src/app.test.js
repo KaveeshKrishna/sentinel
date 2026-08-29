@@ -241,6 +241,123 @@ test('GET /api/settings/ai reports unconfigured, and PUT/GET never leaks the raw
   });
 });
 
+// ── Settings/AI credential pool + failover ───────────────────────────────────
+
+/** Thin wrappers so the credential tests read as intent, not as fetch noise. */
+function credApi(base, auth) {
+  const json = { ...auth, 'Content-Type': 'application/json' };
+  return {
+    list:   async () => (await fetch(`${base}/api/settings/ai/credentials`, { headers: auth })).json(),
+    add:    (body) => fetch(`${base}/api/settings/ai/credentials`, { method: 'POST', headers: json, body: JSON.stringify(body) }),
+    update: (id, body) => fetch(`${base}/api/settings/ai/credentials/${id}`, { method: 'PUT', headers: json, body: JSON.stringify(body) }),
+    remove: (id) => fetch(`${base}/api/settings/ai/credentials/${id}`, { method: 'DELETE', headers: auth }),
+    order:  (ids) => fetch(`${base}/api/settings/ai/credentials/order`, { method: 'PUT', headers: json, body: JSON.stringify({ ids }) })
+  };
+}
+
+async function clearCredentials(base, auth) {
+  const { credentials } = await credApi(base, auth).list();
+  for (const c of credentials) await credApi(base, auth).remove(c.id);
+}
+
+test('AI credentials can be added, listed in failover order, and never leak a raw key', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const api = credApi(base, auth);
+    await clearCredentials(base, auth);
+
+    const created = await api.add({ label: 'Primary', provider: 'anthropic', model: 'claude-sonnet-5', apiKey: 'sk-ant-secret-value-1111' });
+    assert.equal(created.status, 201);
+    const body = await created.json();
+    assert.equal(body.keySuffix, '1111');
+    assert.ok(!JSON.stringify(body).includes('sk-ant-secret-value-1111'));
+
+    await api.add({ label: 'Backup', provider: 'gemini', apiKey: 'gem-secret-2222' });
+
+    const { credentials } = await api.list();
+    assert.deepEqual(credentials.map(c => c.label), ['Primary', 'Backup']);
+    assert.ok(!JSON.stringify(credentials).includes('sk-ant-secret-value-1111'));
+    assert.ok(!JSON.stringify(credentials).includes('gem-secret-2222'));
+
+    await clearCredentials(base, auth);
+  });
+});
+
+test('PUT /api/settings/ai/credentials/order reorders the chain and is not swallowed by /:id', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const api = credApi(base, auth);
+    await clearCredentials(base, auth);
+
+    const a = await (await api.add({ label: 'A', provider: 'anthropic', apiKey: 'k1' })).json();
+    const b = await (await api.add({ label: 'B', provider: 'gemini', apiKey: 'k2' })).json();
+
+    const res = await api.order([b.id, a.id]);
+    assert.equal(res.status, 200, "'order' must route to the reorder handler, not to :id");
+    assert.deepEqual((await res.json()).credentials.map(c => c.label), ['B', 'A']);
+
+    await clearCredentials(base, auth);
+  });
+});
+
+test('a credential can be disabled and re-enabled without losing its stored key', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const api = credApi(base, auth);
+    await clearCredentials(base, auth);
+
+    const a = await (await api.add({ label: 'A', provider: 'anthropic', apiKey: 'sk-keep-me-4444' })).json();
+    const disabled = await (await api.update(a.id, { enabled: false })).json();
+    assert.equal(disabled.enabled, false);
+    // No apiKey sent — the stored one must survive, or disabling would
+    // silently destroy the credential.
+    const reenabled = await (await api.update(a.id, { enabled: true })).json();
+    assert.equal(reenabled.enabled, true);
+    assert.equal(reenabled.keySuffix, '4444');
+
+    await clearCredentials(base, auth);
+  });
+});
+
+test('credential routes reject a bad provider and 404 an unknown id', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const api = credApi(base, auth);
+
+    assert.equal((await api.add({ provider: 'not-a-provider', apiKey: 'x' })).status, 400);
+    assert.equal((await api.add({ provider: 'anthropic' })).status, 400, 'a credential with no key is not a credential');
+    assert.equal((await api.update(999999, { label: 'x' })).status, 404);
+    assert.equal((await api.remove(999999)).status, 404);
+  });
+});
+
+test('the legacy single-provider PUT /api/settings/ai and the credential pool stay one source of truth', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const api = credApi(base, auth);
+    await clearCredentials(base, auth);
+
+    await fetch(`${base}/api/settings/ai`, {
+      method: 'PUT',
+      headers: { ...auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'anthropic', model: 'claude-sonnet-5', apiKey: 'sk-legacy-9999' })
+    });
+
+    const { credentials } = await api.list();
+    assert.equal(credentials.length, 1, 'the legacy form writes into the pool, not a second store');
+    assert.equal(credentials[0].keySuffix, '9999');
+
+    // ...and the pool is what the legacy read reports back.
+    const cfg = await (await fetch(`${base}/api/settings/ai`, { headers: auth })).json();
+    assert.equal(cfg.configured, true);
+    assert.equal(cfg.provider, 'anthropic');
+    assert.equal(cfg.credentialCount, 1);
+
+    await fetch(`${base}/api/settings/ai`, { method: 'DELETE', headers: auth });
+    assert.equal((await api.list()).credentials.length, 0, 'DELETE clears the whole pool');
+  });
+});
+
 test('PUT /api/settings/ai rejects an unknown provider', async () => {
   await withServer(async (base) => {
     const auth = await loginAndGetAuthHeader(base);
@@ -652,32 +769,31 @@ test('POST /api/chat streams an error event rather than failing the request when
   });
 });
 
-test('abandoning a POST /api/chat request stops the turn from continuing to spend tool calls', async () => {
-  // Reproduces a real bug: the browser reported "network error" mid-turn,
-  // but reopening the session afterward showed a tool call and a final
-  // answer that had run *after* the connection was already gone. The
-  // server must notice the client left and stop, not keep working.
+test('abandoning a POST /api/chat request does NOT stop the turn — it finishes and is persisted', async () => {
+  // Deliberately the reverse of the earlier behaviour. Aborting on client
+  // disconnect was built to stop a dead connection burning quota, but it
+  // meant the ordinary "ask something, go look at Incidents while it
+  // thinks" lost the answer — and the provider request had already been
+  // paid for either way. A turn now outlives its stream; only an explicit
+  // Stop ends it early.
   await withServer(async (base) => {
     const auth = await loginAndGetAuthHeader(base);
 
-    let toolCallCount = 0;
     _setClientForTesting({
       listTools: async () => [{ name: 'get_system_metrics', risk: 'READ_ONLY', description: 'x', parameters: { type: 'object', properties: {} } }],
-      callTool: async () => {
-        toolCallCount++;
-        await new Promise(r => setTimeout(r, 50)); // gives the abort time to land between steps
-        return { cpu: 4 };
-      },
+      callTool: async () => { await new Promise(r => setTimeout(r, 30)); return { cpu: 4 }; },
       verifyTool: async () => ({ ok: true })
     });
-    // A provider that always asks for another tool call — if the server
-    // doesn't notice the client is gone, it will keep going until
-    // MAX_STEPS, making far more than one or two tool calls.
+
+    let step = 0;
     _setProviderForTesting({
-      chat: async () => ({
-        text: JSON.stringify({ action: 'tool', tool: 'get_system_metrics', params: {} }),
-        toolCalls: [], usage: {}
-      })
+      chat: async () => {
+        step++;
+        await new Promise(r => setTimeout(r, 40));
+        return step === 1
+          ? { text: JSON.stringify({ action: 'tool', tool: 'get_system_metrics', params: {} }), toolCalls: [], usage: {} }
+          : { text: JSON.stringify({ action: 'answer', answer: 'finished after you left' }), toolCalls: [], usage: {} };
+      }
     });
     setAIConfig({ provider: 'anthropic', model: 'test-model', apiKey: 'sk-test-key' });
 
@@ -685,26 +801,169 @@ test('abandoning a POST /api/chat request stops the turn from continuing to spen
       const controller = new AbortController();
       const fetchPromise = fetch(`${base}/api/chat`, {
         method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: 'keep checking' }),
+        body: JSON.stringify({ message: 'answer me even if I leave' }),
         signal: controller.signal
-      }).catch(() => {}); // the abort itself rejects the fetch — expected
+      }).catch(() => {});
 
-      await new Promise(r => setTimeout(r, 120)); // let a tool call or two actually happen
+      await new Promise(r => setTimeout(r, 60)); // mid-turn
       controller.abort();
       await fetchPromise;
 
-      const countAtAbort = toolCallCount;
-      assert.ok(countAtAbort >= 1, 'at least one tool call had a chance to run before abort');
+      // The turn should keep going and land its answer in the session.
+      await new Promise(r => setTimeout(r, 500));
 
-      // Give any wrongly-still-running loop plenty of time to have made
-      // several more calls if it didn't actually stop.
-      await new Promise(r => setTimeout(r, 400));
+      const sessions = await (await fetch(`${base}/api/chat/sessions`, { headers: auth })).json();
+      const session = sessions[0];
+      const full = await (await fetch(`${base}/api/chat/sessions/${session.id}`, { headers: auth })).json();
+      const assistant = full.messages.filter(m => m.role === 'assistant');
+
+      assert.equal(assistant.length, 1, 'the abandoned turn still produced exactly one answer');
+      assert.equal(assistant[0].content, 'finished after you left');
+    } finally {
+      _resetProviderForTesting();
+      _resetClientForTesting();
+      clearAIConfig();
+    }
+  });
+});
+
+test('POST /api/chat/sessions/:id/stop ends a running turn, and what it had gathered is kept', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+
+    let toolCallCount = 0;
+    _setClientForTesting({
+      listTools: async () => [{ name: 'get_system_metrics', risk: 'READ_ONLY', description: 'x', parameters: { type: 'object', properties: {} } }],
+      callTool: async () => { toolCallCount++; await new Promise(r => setTimeout(r, 40)); return { cpu: 4 }; },
+      verifyTool: async () => ({ ok: true })
+    });
+    // Never answers — only an explicit stop can end this turn.
+    _setProviderForTesting({
+      chat: async () => {
+        await new Promise(r => setTimeout(r, 40));
+        return { text: JSON.stringify({ action: 'tool', tool: 'get_system_metrics', params: {} }), toolCalls: [], usage: {} };
+      }
+    });
+    setAIConfig({ provider: 'anthropic', model: 'test-model', apiKey: 'sk-test-key' });
+
+    try {
+      const chatPromise = fetch(`${base}/api/chat`, {
+        method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'loop forever' })
+      }).then(r => r.text());
+
+      await new Promise(r => setTimeout(r, 200));
+      const running = await (await fetch(`${base}/api/chat/running`, { headers: auth })).json();
+      assert.equal(running.running.length, 1, 'the turn is visible as in-flight');
+
+      const sessionId = running.running[0].sessionId;
+      const stopRes = await fetch(`${base}/api/chat/sessions/${sessionId}/stop`, { method: 'POST', headers: auth });
+      assert.deepEqual(await stopRes.json(), { stopped: true });
+
+      const body = await chatPromise;
+      assert.match(body, /"type":"stopped"/);
+
+      const countAtStop = toolCallCount;
+      await new Promise(r => setTimeout(r, 300));
+      assert.ok(toolCallCount <= countAtStop + 1, 'the loop actually stopped rather than running on');
+
+      const full = await (await fetch(`${base}/api/chat/sessions/${sessionId}`, { headers: auth })).json();
+      const assistant = full.messages.filter(m => m.role === 'assistant');
+      assert.match(assistant[0].content, /stopped/, 'the partial turn is recorded honestly, not as an answer');
+    } finally {
+      _resetProviderForTesting();
+      _resetClientForTesting();
+      clearAIConfig();
+    }
+  });
+});
+
+test('a single-step turn is still stoppable — Stop lands while the one call is in flight', async () => {
+  // Regression found live: cancellation was only polled at the top of
+  // the loop, so a turn that answers in one provider call ignored Stop
+  // entirely and the button looked broken.
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+
+    _setClientForTesting({
+      listTools: async () => [],
+      callTool: async () => ({}),
+      verifyTool: async () => ({ ok: true })
+    });
+    _setProviderForTesting({
+      chat: async () => {
+        await new Promise(r => setTimeout(r, 400)); // slow single call
+        return { text: JSON.stringify({ action: 'answer', answer: 'should not be delivered' }), toolCalls: [], usage: {} };
+      }
+    });
+    setAIConfig({ provider: 'anthropic', model: 'test-model', apiKey: 'sk-test-key' });
+
+    try {
+      const chatPromise = fetch(`${base}/api/chat`, {
+        method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'one shot' })
+      }).then(r => r.text());
+
+      await new Promise(r => setTimeout(r, 120)); // mid-call
+      const running = await (await fetch(`${base}/api/chat/running`, { headers: auth })).json();
+      const sessionId = running.running[0].sessionId;
+      await fetch(`${base}/api/chat/sessions/${sessionId}/stop`, { method: 'POST', headers: auth });
+
+      const body = await chatPromise;
+      assert.match(body, /"type":"stopped"/);
+
+      const full = await (await fetch(`${base}/api/chat/sessions/${sessionId}`, { headers: auth })).json();
+      const assistant = full.messages.filter(m => m.role === 'assistant');
+      assert.match(assistant[0].content, /stopped/);
       assert.ok(
-        toolCallCount <= countAtAbort + 1,
-        `expected the turn to stop at/near abort (was ${countAtAbort}, now ${toolCallCount}) — it kept running`
+        !assistant.some(m => m.content.includes('should not be delivered')),
+        'an answer that arrived after Stop must not be presented as the result'
       );
     } finally {
       _resetProviderForTesting();
+      _resetClientForTesting();
+      clearAIConfig();
+    }
+  });
+});
+
+test('a second turn on a session that is already thinking is refused', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+
+    _setClientForTesting({
+      listTools: async () => [{ name: 'get_system_metrics', risk: 'READ_ONLY', description: 'x', parameters: { type: 'object', properties: {} } }],
+      callTool: async () => ({ cpu: 1 }),
+      verifyTool: async () => ({ ok: true })
+    });
+    _setProviderForTesting({
+      chat: async () => {
+        await new Promise(r => setTimeout(r, 300));
+        return { text: JSON.stringify({ action: 'answer', answer: 'done' }), toolCalls: [], usage: {} };
+      }
+    });
+    setAIConfig({ provider: 'anthropic', model: 'test-model', apiKey: 'sk-test-key' });
+
+    try {
+      const first = fetch(`${base}/api/chat`, {
+        method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'first' })
+      }).then(r => r.text());
+
+      await new Promise(r => setTimeout(r, 100));
+      const running = await (await fetch(`${base}/api/chat/running`, { headers: auth })).json();
+      const sessionId = running.running[0].sessionId;
+
+      const second = await fetch(`${base}/api/chat`, {
+        method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'second', sessionId })
+      });
+      assert.equal(second.status, 409, 'two tabs must not interleave answers into one conversation');
+
+      await first;
+    } finally {
+      _resetProviderForTesting();
+      _resetClientForTesting();
       clearAIConfig();
     }
   });
@@ -791,5 +1050,136 @@ test('DELETE /api/incidents/:id removes one incident; DELETE /api/incidents?stat
     assert.equal(clearDismissed.status, 200);
     assert.equal(store.getIncident(drop.id), null);
     assert.ok(store.getIncident(keep.id));
+  });
+});
+
+// ── Deployments (Feature 1: deploy-aware incidents + rollback) ─────────────
+
+test('POST /:repo/deploy writes a durable deployments row and a tool_executions row', async () => {
+  const { getDb } = require('./db/connection');
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const repoName = 'demo-app-' + crypto.randomUUID();
+
+    _setClientForTesting({
+      listTools: async () => [],
+      callTool: async (name, params) => {
+        assert.equal(name, 'deploy_repository');
+        assert.equal(params.repo, repoName);
+        return {
+          repo: repoName, steps: [{ step: 'fetch', ok: true }, { step: 'pull', ok: true, output: 'ff' }],
+          upToDate: false, message: 'Deployed successfully',
+          fromSha: 'aaa1111', toSha: 'bbb2222', fromMessage: 'old commit', toMessage: 'new commit'
+        };
+      }
+    });
+
+    const res = await fetch(`${base}/api/deployments/${repoName}/deploy`, { method: 'POST', headers: auth });
+    assert.equal(res.status, 200);
+    await res.text(); // drain the SSE stream so the route's handler has fully run
+
+    const row = getDb().prepare('SELECT * FROM deployments WHERE repo_name = ?').get(repoName);
+    assert.ok(row, 'a deployments row must exist after a successful deploy');
+    assert.equal(row.status, 'success');
+    assert.equal(row.from_sha, 'aaa1111');
+    assert.equal(row.to_sha, 'bbb2222');
+    assert.equal(row.from_message, 'old commit');
+    assert.equal(row.to_message, 'new commit');
+    assert.equal(row.deployed_by, 'user');
+
+    const execRow = getDb().prepare("SELECT * FROM tool_executions WHERE tool_name = 'deploy_repository' ORDER BY id DESC LIMIT 1").get();
+    assert.ok(execRow, 'a human-triggered deploy must be audited, same as an AI-initiated one');
+    assert.equal(execRow.status, 'ok');
+    assert.equal(execRow.requested_by, 'user');
+
+    _resetClientForTesting();
+  });
+});
+
+test('an up-to-date deploy is recorded with status up_to_date, matching from/to sha', async () => {
+  const { getDb } = require('./db/connection');
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const repoName = 'uptodate-' + crypto.randomUUID();
+
+    _setClientForTesting({
+      listTools: async () => [],
+      callTool: async () => ({
+        repo: repoName, steps: [{ step: 'fetch', ok: true }], upToDate: true, message: 'Already up to date',
+        fromSha: 'same0000', toSha: 'same0000', fromMessage: 'x', toMessage: 'x'
+      })
+    });
+
+    await (await fetch(`${base}/api/deployments/${repoName}/deploy`, { method: 'POST', headers: auth })).text();
+
+    const row = getDb().prepare('SELECT * FROM deployments WHERE repo_name = ?').get(repoName);
+    assert.equal(row.status, 'up_to_date');
+    assert.equal(row.from_sha, row.to_sha);
+
+    _resetClientForTesting();
+  });
+});
+
+test('a failed deploy is still recorded, with status failed and no sha (the tool threw before computing them)', async () => {
+  const { getDb } = require('./db/connection');
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const repoName = 'dirty-repo-' + crypto.randomUUID();
+
+    _setClientForTesting({
+      listTools: async () => [],
+      callTool: async () => { throw new Error('Repository has uncommitted changes: 2 file(s).'); }
+    });
+
+    const res = await fetch(`${base}/api/deployments/${repoName}/deploy`, { method: 'POST', headers: auth });
+    const body = await res.text();
+    assert.match(body, /uncommitted changes/);
+
+    const row = getDb().prepare('SELECT * FROM deployments WHERE repo_name = ?').get(repoName);
+    assert.equal(row.status, 'failed');
+    assert.equal(row.from_sha, null);
+
+    const execRow = getDb().prepare("SELECT * FROM tool_executions WHERE tool_name = 'deploy_repository' AND status = 'error' ORDER BY id DESC LIMIT 1").get();
+    assert.ok(execRow, 'a failed deploy is still audited');
+
+    _resetClientForTesting();
+  });
+});
+
+test('POST /:repo/rollback requires a sha and, on success, records a deployments row', async () => {
+  const { getDb } = require('./db/connection');
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const repoName = 'rollback-target-' + crypto.randomUUID();
+
+    const missingSha = await fetch(`${base}/api/deployments/${repoName}/rollback`, {
+      method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({})
+    });
+    assert.equal(missingSha.status, 400);
+
+    _setClientForTesting({
+      listTools: async () => [],
+      callTool: async (name, params) => {
+        assert.equal(name, 'rollback_repository');
+        assert.equal(params.sha, 'aaa1111');
+        return {
+          repo: repoName, steps: [{ step: 'reset', ok: true }], message: 'Rolled back to aaa1111',
+          fromSha: 'bbb2222', toSha: 'aaa1111', fromMessage: 'bad deploy', toMessage: 'known good'
+        };
+      }
+    });
+
+    const res = await fetch(`${base}/api/deployments/${repoName}/rollback`, {
+      method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ sha: 'aaa1111' })
+    });
+    assert.equal(res.status, 200);
+    await res.text();
+
+    const row = getDb().prepare('SELECT * FROM deployments WHERE repo_name = ?').get(repoName);
+    assert.ok(row);
+    assert.equal(row.to_sha, 'aaa1111');
+    assert.equal(row.from_sha, 'bbb2222');
+
+    _resetClientForTesting();
   });
 });

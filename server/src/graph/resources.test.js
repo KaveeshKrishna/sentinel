@@ -51,3 +51,24 @@ test('listResources returns every upserted resource', () => {
   upsertResource({ type: 'container', externalId: 'one-off-' + crypto.randomUUID(), name: 'x' });
   assert.equal(listResources().length, before2 + 1);
 });
+
+test('a later upsert with no metadata does not erase metadata an earlier upsert recorded', () => {
+  // Regression: the detector observes the same container from two
+  // different code paths in the same 5s tick — checkContainerHealth sets
+  // compose labels for deploy correlation, but raiseIncident's own
+  // upsert (e.g. on a container_exit event) never passes metadata at
+  // all. Before the COALESCE fix, that second call's implicit `null`
+  // would silently wipe the compose metadata right as an incident is
+  // raised — exactly when deploy correlation needs it.
+  const id = 'compose-container-' + crypto.randomUUID();
+  upsertResource({ type: 'container', externalId: id, name: id, metadata: { composeProject: 'demo-api' } });
+  const updated = upsertResource({ type: 'container', externalId: id, name: id }); // no metadata this time
+  assert.deepEqual(updated.metadata, { composeProject: 'demo-api' });
+});
+
+test('explicitly passing metadata still replaces the old value (not merged, overwritten)', () => {
+  const id = 'compose-container-' + crypto.randomUUID();
+  upsertResource({ type: 'container', externalId: id, name: id, metadata: { composeProject: 'old' } });
+  const updated = upsertResource({ type: 'container', externalId: id, name: id, metadata: { composeProject: 'new' } });
+  assert.deepEqual(updated.metadata, { composeProject: 'new' });
+});

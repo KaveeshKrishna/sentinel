@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 
 const SUGGESTIONS = [
   'Why is CPU high right now?',
@@ -14,7 +15,7 @@ function ToolChip({ call }) {
   return (
     <div className="chat-tool">
       <button className="chat-tool-head" onClick={() => setOpen(o => !o)}>
-        <span>{call.ok === false ? '⚠' : '🔧'}</span>
+        <span>{call.ok === false ? <Icon name="alert-triangle" size={13} /> : <Icon name="wrench" size={13} />}</span>
         <span className="mono">{call.tool}</span>
         {call.params && Object.keys(call.params).length > 0 && (
           <span className="chat-tool-params mono">{JSON.stringify(call.params)}</span>
@@ -36,7 +37,7 @@ function Turn({ turn, onEscalate, escalating }) {
       <div className="chat-body">
         {turn.thought && <div className="chat-thought">{turn.thought}</div>}
         {turn.calls?.map((c, i) => <ToolChip key={i} call={c} />)}
-        {turn.refusals?.map((r, i) => <div key={i} className="chat-refused">🔒 {r.reason}</div>)}
+        {turn.refusals?.map((r, i) => <div key={i} className="chat-refused"><Icon name="lock" size={13} /> {r.reason}</div>)}
         {turn.content && <div className="chat-answer">{turn.content}</div>}
         {turn.error && <div className="error-msg">{turn.error}</div>}
         {turn.pending && !turn.content && <div className="chat-thinking"><span /><span /><span /></div>}
@@ -55,7 +56,7 @@ function Turn({ turn, onEscalate, escalating }) {
               disabled={escalating || turn.escalatedTo}
               onClick={() => onEscalate(turn)}
             >
-              {turn.escalatedTo ? `→ Incident #${turn.escalatedTo}` : escalating ? 'Creating…' : '⚑ Create incident'}
+              {turn.escalatedTo ? `→ Incident #${turn.escalatedTo}` : escalating ? 'Creating…' : <><Icon name="flag" size={12} /> Create incident</>}
             </button>
           </div>
         )}
@@ -81,6 +82,10 @@ export default function AskSentinel() {
   const [sessions, setSessions] = useState([]);
   const [escalating, setEscalating] = useState(false);
   const endRef = useRef(null);
+  // The session whose turn is currently streaming. Held in a ref because
+  // Stop must target the right conversation even after the operator has
+  // clicked into a different one.
+  const runningSessionRef = useRef(null);
   const navigate = useNavigate();
 
   const loadSessions = useCallback(() => {
@@ -88,6 +93,18 @@ export default function AskSentinel() {
   }, []);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
+
+  // Deep link from the "answer landed" toast — a turn finishes even when
+  // the operator has navigated away, so the notification has to be able
+  // to bring them back to the right conversation.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const wanted = Number(searchParams.get('session'));
+    if (!wanted) return;
+    openSession(wanted);
+    setSearchParams({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [turns]);
 
   async function openSession(id) {
@@ -121,6 +138,22 @@ export default function AskSentinel() {
     } catch (err) {
       alert(err.message);
     }
+  }
+
+  /**
+   * Stop a turn that is mid-thought.
+   *
+   * The turn runs server-side and no longer dies when this component
+   * unmounts or the tab closes, so this is the only way to end one early
+   * — which is why it needs the session id even if the stream has since
+   * detached.
+   */
+  async function stop() {
+    const target = runningSessionRef.current ?? sessionId;
+    if (!target) return;
+    try {
+      await api.post(`/chat/sessions/${target}/stop`, {});
+    } catch { /* already finished — nothing to stop */ }
   }
 
   /** Mutate the in-flight assistant turn (always the last one). */
@@ -172,6 +205,7 @@ export default function AskSentinel() {
       patchLast(t => ({ ...t, pending: false, error: err.message }));
     } finally {
       setBusy(false);
+      runningSessionRef.current = null;
       loadSessions();
     }
   }
@@ -180,6 +214,13 @@ export default function AskSentinel() {
     switch (ev.type) {
       case 'session':
         setSessionId(ev.sessionId);
+        runningSessionRef.current = ev.sessionId;
+        break;
+      case 'stopped':
+        patchLast(t => ({
+          ...t, pending: false, thought: null,
+          content: t.content || '(stopped)'
+        }));
         break;
       case 'thought':
         patchLast(t => ({ ...t, thought: ev.text }));
@@ -241,7 +282,7 @@ export default function AskSentinel() {
               onClick={() => openSession(s.id)}
             >
               <span className="chat-session-title">{s.title}</span>
-              <button className="btn-icon" onClick={(e) => removeSession(e, s.id)} title="Delete">✕</button>
+              <button className="btn-icon" onClick={(e) => removeSession(e, s.id)} title="Delete"><Icon name="x" size={12} /></button>
             </div>
           ))}
           {sessions.length === 0 && <div className="chat-session-empty">No conversations yet.</div>}
@@ -277,14 +318,23 @@ export default function AskSentinel() {
           <input
             id="chat-input"
             className="form-input"
-            placeholder="Ask about CPU, containers, services, logs…"
+            placeholder={busy ? "Thinking — you can leave this page, the answer will be saved…" : "Ask about CPU, containers, services, logs…"}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={busy}
           />
-          <button id="btn-chat-send" className="btn btn-primary" type="submit" disabled={busy || !input.trim()}>
-            {busy ? '…' : 'Ask'}
-          </button>
+          {busy ? (
+            // The turn continues server-side whether or not this page is
+            // open, so stopping has to be a deliberate act rather than a
+            // side effect of navigating away.
+            <button id="btn-chat-stop" className="btn btn-danger" type="button" onClick={stop}>
+              ■ Stop
+            </button>
+          ) : (
+            <button id="btn-chat-send" className="btn btn-primary" type="submit" disabled={!input.trim()}>
+              Ask
+            </button>
+          )}
         </form>
       </div>
     </div>

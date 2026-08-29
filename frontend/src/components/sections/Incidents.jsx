@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 import StatusBadge from '../shared/StatusBadge';
 import { useLiveEvents } from '../../hooks/useWebSocket';
 
@@ -107,7 +108,7 @@ export default function Incidents() {
             onClick={clearAll}
             disabled={clearing}
           >
-            {clearing ? '…' : `🗑 Clear ${statusFilter ? STATUS_FILTERS.find(f => f.id === statusFilter)?.label : 'all'} (${incidents.length})`}
+            {clearing ? '…' : <><Icon name="trash" size={12} /> {`Clear ${statusFilter ? STATUS_FILTERS.find(f => f.id === statusFilter)?.label : 'all'} (${incidents.length})`}</>}
           </button>
         )}
       </div>
@@ -116,13 +117,13 @@ export default function Incidents() {
         <div className="empty-state"><div className="boot-spinner" /></div>
       ) : incidents.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-state-icon">✅</div>
+          <div className="empty-state-icon"><Icon name="check-circle" size={32} /></div>
           <p>No incidents{statusFilter ? ' match this filter' : ' — everything looks healthy'}</p>
         </div>
       ) : (
         <div className="card">
           <div className="card-title" style={{ marginBottom: 12 }}>
-            🚨 Incidents ({incidents.length}{openCount > 0 ? `, ${openCount} open` : ''})
+            <Icon name="alert-triangle" /> Incidents ({incidents.length}{openCount > 0 ? `, ${openCount} open` : ''})
           </div>
           <div className="table-wrap">
             <table className="data-table">
@@ -153,7 +154,7 @@ export default function Incidents() {
                         title="Delete incident"
                         onClick={e => deleteOne(e, inc.id)}
                       >
-                        ✕
+                        <Icon name="x" size={11} />
                       </button>
                     </td>
                   </tr>

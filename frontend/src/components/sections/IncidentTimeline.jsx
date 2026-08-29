@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 
-const STAGE_ICON = { done: '✓', active: '•', failed: '✕', skipped: '–', pending: '' };
+const STAGE_ICON = {
+  done: <Icon name="check" size={11} />, active: '•', failed: <Icon name="x" size={11} />, skipped: '–', pending: ''
+};
 
 const ENTRY_ICON = {
   transition: '◆',
-  tool: '🔧',
-  ai: '🧠',
-  action: '⚙'
+  tool: <Icon name="wrench" size={12} />,
+  ai: <Icon name="brain" size={12} />,
+  action: <Icon name="settings" size={12} />
 };
 
 function fmtTime(ts) {
@@ -72,14 +75,14 @@ export default function IncidentTimeline({ incidentId, refreshKey }) {
     return () => { cancelled = true; };
   }, [incidentId, refreshKey]);
 
-  if (error) return <div className="card"><div className="card-title">🔁 Reasoning Loop</div><div className="error-msg">{error}</div></div>;
+  if (error) return <div className="card"><div className="card-title"><Icon name="refresh-cw" /> Reasoning Loop</div><div className="error-msg">{error}</div></div>;
   if (!data) return null;
 
   const synthesized = data.entries.some(e => e.kind === 'transition' && e.synthesized);
 
   return (
     <div className="card">
-      <div className="card-title">🔁 Reasoning Loop</div>
+      <div className="card-title"><Icon name="refresh-cw" /> Reasoning Loop</div>
 
       <div className="loop-strip">
         {data.phases.map(p => (

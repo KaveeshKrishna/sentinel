@@ -1,12 +1,14 @@
 'use strict';
 
 const { getAgentClient } = require('../agent/client');
-const { getProvider } = require('./provider');
-const { getAIConfig, getDecryptedAPIKey } = require('../settings/aiConfig');
+const { getAIConfig } = require('../settings/aiConfig');
+const { chatWithFailover, isRetryable } = require('./failover');
 const { CHAT_STEP_SCHEMA, validateChatStep } = require('./schema');
 const { renderToolCatalog } = require('./orchestrator');
 const { callToolAudited } = require('../incidents/toolCallAudit');
 const { summarizeToolResult } = require('./summarize');
+const { listLocalTools, callLocalTool } = require('./localTools');
+const { getAllowedRoots } = require('../settings/accessScope');
 const { recordAiRun } = require('./runs');
 const { redact } = require('./redact');
 
@@ -17,6 +19,13 @@ const { redact } = require('./redact');
  * which keeps returning malformed JSON, or keeps asking for tools it
  * isn't allowed, terminates instead of looping.
  */
+/**
+ * Agent tools whose `roots` parameter is filled in from Settings rather
+ * than by the model. Listing them explicitly (instead of sending `roots`
+ * to everything) keeps every other tool's strict schema intact.
+ */
+const FILE_TOOLS = new Set(['list_directory', 'read_file', 'search_files']);
+
 const MAX_TOOL_CALLS = 5;
 const MAX_STEPS = 8;
 const CHAT_RESULT_LIMIT = 3000;
@@ -37,45 +46,14 @@ const CHAT_RESULT_LIMIT = 3000;
 const MAX_TURN_MS = 60000;
 
 /**
- * Extra tries for a provider call that fails with a status suggesting
- * the failure is on the provider's side, not a real misconfiguration.
- *
- * Found live against a real OpenRouter free-tier model
- * (nvidia/nemotron-3-ultra-...:free): the identical request — same base
- * URL, same key, same model, proven by a Settings "Test Connection" that
- * succeeded moments earlier — returned a real completion on some calls
- * and "OpenAI-compatible API error (404): Provider returned error" on
- * others. A wrong base URL or bad key fails *every* call; this failed
- * roughly half the time, which is the signature of OpenRouter routing a
- * free model across multiple backend providers of varying availability,
- * not a Sentinel or user configuration problem. A bounded retry turns
- * "the conversation just dies" into "try again, usually works" — the
- * request costs the same provider quota either way, since the failed
- * attempt never got billed/counted as a completion.
- *
- * Deliberately scoped to chat only: unlike a diagnosis, a chat turn is a
- * live, synchronous, user-initiated request with no background process
- * to retry it later — diagnosis already has its own (much coarser,
- * 30s+) resilience via the detector's checkStuckInvestigations backoff,
- * and the post-incident report is deliberately single-attempt by design
- * (see ai/report.js). 401/403/400 (bad key, bad request) are excluded
- * on purpose — those fail identically every time, so retrying only
- * burns quota and delays the real error reaching the operator.
+ * Re-exported from ai/failover.js, where the transient-retry policy now
+ * lives so every AI call site shares one definition of "the provider is
+ * flaky" vs "the config is wrong". Kept named here because this is where
+ * the behaviour was found and is still exercised (ai/chat.test.js).
  */
-const PROVIDER_RETRY_ATTEMPTS = 2; // extra tries beyond the first
-const PROVIDER_RETRY_DELAY_MS = 300;
-const PROVIDER_RETRYABLE_STATUS = new Set([404, 408, 429, 500, 502, 503, 504]);
+const PROVIDER_RETRY_ATTEMPTS = 2; // extra tries beyond the first, per credential
 
-function retryableProviderStatus(message) {
-  const m = /\((\d{3})\)/.exec(message || '');
-  return m ? PROVIDER_RETRYABLE_STATUS.has(Number(m[1])) : false;
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function buildChatSystemPrompt(readOnlyCatalog) {
+function buildChatSystemPrompt(readOnlyCatalog, allowedRoots = []) {
   return [
     'You are Sentinel, an AI infrastructure engineer with read-only access to a single monitored host.',
     'A human operator is asking you questions about it. Investigate using the tools below, then answer.',
@@ -94,6 +72,13 @@ function buildChatSystemPrompt(readOnlyCatalog) {
     'calls over exhaustively checking everything. After each tool call you will be given its output;',
     'use it to decide whether to run another tool or to answer.',
     '',
+    allowedRoots.length > 0
+      ? `You may read files under these directories, and nowhere else: ${allowedRoots.join(', ')}. ` +
+        'Use list_directory to explore and read_file (with a "tail" for logs) to read. Keys, ' +
+        'credentials and secret stores are refused no matter where they sit.'
+      : 'You have no filesystem access: no directory has been allowed by the operator. If a question ' +
+        'needs one, say so and suggest they add it under Settings \u2192 Access Scope.',
+    '',
     'Ground your answer strictly in tool output. Never invent metrics, log lines or container names.',
     'If the tools available cannot answer the question, say so plainly instead of guessing.',
     'Write the "answer" for a human operator: direct, specific, and short — a few sentences, or a',
@@ -109,34 +94,26 @@ function buildChatSystemPrompt(readOnlyCatalog) {
 }
 
 /**
- * Call the provider, retrying a bounded number of times when the
- * failure's HTTP status suggests it's transient rather than a real
- * config problem (see PROVIDER_RETRY_ATTEMPTS above for why and when).
- * Every attempt — success or failure — is recorded to ai_runs, so the
- * audit trail shows exactly what happened rather than only the final
- * outcome.
+ * Call the provider through the failover chain, recording every attempt
+ * — including each credential that failed on the way — to ai_runs.
+ *
+ * The transient-status retry that used to live here now lives in
+ * ai/failover.js (`retryTransient`), applied per credential before
+ * moving on to the next one: a flaky provider should be retried on the
+ * key the operator actually chose first, before falling back to a
+ * different model whose answers may be worse.
  */
-async function callProviderWithRetry(adapter, chatArgs, { provider, model, step, question }) {
-  let lastErr;
-  for (let sub = 0; sub <= PROVIDER_RETRY_ATTEMPTS; sub++) {
-    const startedAt = Date.now();
-    try {
-      return await adapter.chat(chatArgs);
-    } catch (err) {
-      lastErr = err;
-      recordAiRun({
-        incidentId: null, purpose: 'chat', provider, model, attempt: step,
-        requestSummary: question, rawResponse: null, parsedJson: null,
-        error: err.message, usage: null, latencyMs: Date.now() - startedAt
-      });
-      if (sub < PROVIDER_RETRY_ATTEMPTS && retryableProviderStatus(err.message)) {
-        await sleep(PROVIDER_RETRY_DELAY_MS);
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastErr;
+async function callProviderWithRetry(chatArgs, { step, question }) {
+  return chatWithFailover(chatArgs, {
+    purpose: 'chat',
+    retryTransient: true,
+    onAttemptError: ({ credential, error, latencyMs }) => recordAiRun({
+      incidentId: null, purpose: 'chat',
+      provider: credential.provider, model: credential.model, credentialId: credential.id, attempt: step,
+      requestSummary: question, rawResponse: null, parsedJson: null,
+      error: error.message, usage: null, latencyMs
+    })
+  });
 }
 
 /** Pulled out for direct unit testing — real-timing tests can't cheaply hit both branches. */
@@ -188,14 +165,31 @@ async function runChat({ question, history = [], onEvent = () => {}, isCancelled
     throw new Error('No AI provider configured. Add one in Settings first.');
   }
 
-  const apiKey = getDecryptedAPIKey();
-  const adapter = getProvider(config.provider);
-
-  const catalog = await getAgentClient().listTools();
+  // Two sources, one catalog. Agent tools reach the host; local tools
+  // answer from Sentinel's own database (recordings, incidents,
+  // activity) and never leave this process. Both are READ_ONLY, so the
+  // single "refuse anything not READ_ONLY" gate below covers both.
+  const agentCatalog = await getAgentClient().listTools();
+  const catalog = [...agentCatalog, ...listLocalTools()];
   const readOnly = catalog.filter(t => t.risk === 'READ_ONLY');
   const allowed = new Map(readOnly.map(t => [t.name, t]));
 
-  const system = buildChatSystemPrompt(readOnly);
+  // Directories the operator has opened up (Settings → Access Scope),
+  // passed to the agent's file tools with each call. Empty by default,
+  // in which case those tools refuse everything. The agent enforces its
+  // own non-negotiable denials on top of this — see agent/src/tools/files.js.
+  const allowedRoots = getAllowedRoots();
+
+  // `roots` is supplied from Settings, never chosen by the model, so it
+  // is hidden from the schema the prompt shows — otherwise the model
+  // invents directory lists and the agent rejects the call.
+  const promptCatalog = readOnly.map(tool => {
+    if (!FILE_TOOLS.has(tool.name) || !tool.parameters?.properties?.roots) return tool;
+    const { roots, ...properties } = tool.parameters.properties;
+    return { ...tool, parameters: { ...tool.parameters, properties } };
+  });
+
+  const system = buildChatSystemPrompt(promptCatalog, allowedRoots);
   const messages = [...historyToMessages(history), { role: 'user', content: question }];
 
   const toolCalls = [];
@@ -214,16 +208,24 @@ async function runChat({ question, history = [], onEvent = () => {}, isCancelled
     const startedAt = Date.now();
     let result;
     try {
-      result = await callProviderWithRetry(adapter, {
-        system, messages,
-        responseSchema: CHAT_STEP_SCHEMA,
-        apiKey, model: config.model, baseUrl: config.baseUrl
-      }, { provider: config.provider, model: config.model, step, question });
+      result = await callProviderWithRetry(
+        { system, messages, responseSchema: CHAT_STEP_SCHEMA },
+        { step, question }
+      );
     } catch (err) {
       // Every attempt (including the retries) already got its own
       // ai_runs row inside callProviderWithRetry — this is the final,
       // exhausted failure, genuinely the operator's problem to see.
       throw err;
+    }
+
+    // Checked again here, not only at the top of the loop: a turn that
+    // needs just one provider call would otherwise be uncancellable —
+    // Stop would land while that call was in flight and the answer would
+    // arrive anyway, making the button look broken. The request is
+    // already paid for either way; what Stop means is "don't act on it".
+    if (isCancelled()) {
+      return { answer: null, toolCalls, suggestedIncident: null, cancelled: true };
     }
 
     let parsed = null;
@@ -238,7 +240,9 @@ async function runChat({ question, history = [], onEvent = () => {}, isCancelled
     if (parsed && !valid) parseError = `Schema validation failed: ${errors.join('; ')}`;
 
     recordAiRun({
-      incidentId: null, purpose: 'chat', provider: config.provider, model: config.model,
+      incidentId: null, purpose: 'chat',
+      provider: result.credential.provider, model: result.credential.model,
+      credentialId: result.credential.id,
       attempt: step, requestSummary: question, rawResponse: result.text,
       parsedJson: valid ? parsed : null, error: parseError,
       usage: result.usage, latencyMs: Date.now() - startedAt
@@ -287,11 +291,23 @@ async function runChat({ question, history = [], onEvent = () => {}, isCancelled
     let summary;
     let ok;
     try {
-      // Gate 2. approved:false — the agent independently re-derives
-      // authorization from its own registered risk for this tool.
-      const output = await callToolAudited(null, tool.name, params, {
-        approved: false, requestedBy: 'chat', realRisk: tool.risk
-      });
+      let output;
+      if (tool.local) {
+        // Sentinel's own records — no agent, no host privilege involved.
+        output = await callLocalTool(tool.name, params);
+      } else {
+        // Gate 2. approved:false — the agent independently re-derives
+        // authorization from its own registered risk for this tool.
+        output = await callToolAudited(null, tool.name, {
+          ...params,
+          // The model never chooses the roots; they come from settings.
+          // Sending them unconditionally would break every non-file
+          // tool's strict `additionalProperties: false` schema.
+          ...(FILE_TOOLS.has(tool.name) ? { roots: allowedRoots } : {})
+        }, {
+          approved: false, requestedBy: 'chat', realRisk: tool.risk
+        });
+      }
       summary = redact(summarizeToolResult(tool.name, output, CHAT_RESULT_LIMIT));
       ok = true;
     } catch (err) {
@@ -323,5 +339,5 @@ function normalizeSuggestion(raw) {
 
 module.exports = {
   runChat, buildChatSystemPrompt, normalizeSuggestion, MAX_TOOL_CALLS, MAX_STEPS, MAX_TURN_MS,
-  retryableProviderStatus, PROVIDER_RETRY_ATTEMPTS, PROVIDER_RETRY_DELAY_MS, timeoutAnswer
+  retryableProviderStatus: isRetryable, PROVIDER_RETRY_ATTEMPTS, timeoutAnswer
 };

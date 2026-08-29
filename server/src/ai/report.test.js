@@ -9,7 +9,7 @@ const DB_PATH = path.join(os.tmpdir(), `sentinel-test-report-${crypto.randomUUID
 process.env.DB_PATH = DB_PATH;
 process.env.SENTINEL_SECRET_KEY = crypto.randomBytes(32).toString('hex');
 
-const { test, before, after } = require('node:test');
+const { test, before, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { migrate } = require('../db/migrate');
 const { getDb } = require('../db/connection');
@@ -18,6 +18,15 @@ const { setAIConfig, clearAIConfig } = require('../settings/aiConfig');
 const { _setProviderForTesting, _resetProviderForTesting } = require('./provider');
 const store = require('../incidents/store');
 const { generateReport, getReport, renderReportMarkdown, buildReportMessage } = require('./report');
+
+// A credential that fails with a rate-limit-shaped error is put into a
+// real cooldown (settings/aiCredentials.js) and skipped on later calls —
+// correct in production, but it would leak between tests here, since one
+// test below deliberately fails with "quota exhausted".
+beforeEach(() => {
+  const { listCredentials, clearHealth } = require('../settings/aiCredentials');
+  for (const c of listCredentials()) clearHealth(c.id);
+});
 
 before(() => {
   migrate();

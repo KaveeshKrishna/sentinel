@@ -2,8 +2,8 @@
 
 const { getDb } = require('../db/connection');
 const { getAgentClient } = require('../agent/client');
-const { getProvider } = require('./provider');
-const { getAIConfig, getDecryptedAPIKey } = require('../settings/aiConfig');
+const { getAIConfig } = require('../settings/aiConfig');
+const { chatWithFailover } = require('./failover');
 const { validate } = require('./schema');
 const { redact } = require('./redact');
 const { recordAiRun } = require('./runs');
@@ -106,32 +106,45 @@ async function runDiagnosis(incident, evidence) {
     return { ok: false, rawText: null, error: 'No AI provider configured' };
   }
 
-  const apiKey = getDecryptedAPIKey();
-  const adapter = getProvider(config.provider);
   const toolCatalog = await getAgentClient().listTools();
 
   const system = buildSystemPrompt(toolCatalog);
   let userContent = buildUserMessage(incident, evidence);
   let lastRawText = null;
 
+  // Which credential actually answered — recorded on each ai_runs row so
+  // the audit trail shows the provider that produced this diagnosis, not
+  // whichever one happens to be primary at read time.
+  let served = { provider: config.provider, model: config.model, credentialId: null };
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const startedAt = Date.now();
     let result;
     try {
-      result = await adapter.chat({
+      result = await chatWithFailover({
         system,
         messages: [{ role: 'user', content: userContent }],
-        responseSchema: require('./schema').DIAGNOSIS_SCHEMA,
-        apiKey,
-        model: config.model,
-        baseUrl: config.baseUrl
+        responseSchema: require('./schema').DIAGNOSIS_SCHEMA
+      }, {
+        purpose: 'diagnosis',
+        // Each failed credential gets its own ai_runs row, so an
+        // exhausted key is visible as a real attempt rather than
+        // disappearing behind whichever provider eventually answered.
+        onAttemptError: ({ credential, error, latencyMs }) => recordAiRun({
+          incidentId: incident.id, purpose: 'diagnosis',
+          provider: credential.provider, model: credential.model, credentialId: credential.id,
+          attempt, requestSummary: userContent, rawResponse: null, parsedJson: null,
+          error: error.message, usage: null, latencyMs
+        })
       });
+      served = {
+        provider: result.credential.provider,
+        model: result.credential.model,
+        credentialId: result.credential.id
+      };
     } catch (err) {
-      recordAiRun({
-        incidentId: incident.id, purpose: 'diagnosis', provider: config.provider, model: config.model,
-        attempt, requestSummary: userContent, rawResponse: null, parsedJson: null,
-        error: err.message, usage: null, latencyMs: Date.now() - startedAt
-      });
+      // Every individual credential failure was already recorded above;
+      // this is the exhausted-chain outcome the operator needs to see.
       return { ok: false, rawText: null, error: err.message };
     }
 
@@ -141,7 +154,7 @@ async function runDiagnosis(incident, evidence) {
       parsed = JSON.parse(result.text);
     } catch {
       recordAiRun({
-        incidentId: incident.id, purpose: 'diagnosis', provider: config.provider, model: config.model,
+        incidentId: incident.id, purpose: 'diagnosis', provider: served.provider, model: served.model, credentialId: served.credentialId,
         attempt, requestSummary: userContent, rawResponse: result.text, parsedJson: null,
         error: 'Response was not valid JSON', usage: result.usage, latencyMs: Date.now() - startedAt
       });
@@ -152,7 +165,7 @@ async function runDiagnosis(incident, evidence) {
     const { valid, errors } = validate(parsed);
     if (!valid) {
       recordAiRun({
-        incidentId: incident.id, purpose: 'diagnosis', provider: config.provider, model: config.model,
+        incidentId: incident.id, purpose: 'diagnosis', provider: served.provider, model: served.model, credentialId: served.credentialId,
         attempt, requestSummary: userContent, rawResponse: result.text, parsedJson: parsed,
         error: `Schema validation failed: ${errors.join('; ')}`, usage: result.usage, latencyMs: Date.now() - startedAt
       });
@@ -161,7 +174,7 @@ async function runDiagnosis(incident, evidence) {
     }
 
     recordAiRun({
-      incidentId: incident.id, purpose: 'diagnosis', provider: config.provider, model: config.model,
+      incidentId: incident.id, purpose: 'diagnosis', provider: served.provider, model: served.model, credentialId: served.credentialId,
       attempt, requestSummary: userContent, rawResponse: result.text, parsedJson: parsed,
       error: null, usage: result.usage, latencyMs: Date.now() - startedAt
     });

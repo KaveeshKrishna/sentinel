@@ -116,14 +116,10 @@ code, .mono { font-family: var(--mono); }
 .login-logo {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: var(--accent);
-  letter-spacing: -0.02em;
+  justify-content: center;
   margin-bottom: 6px;
 }
-.login-logo svg { width: 28px; height: 28px; }
+.login-logo-img { width: 220px; height: auto; }
 .login-subtitle { color: var(--text-muted); font-size: 0.8rem; }
 
 .form-group { margin-bottom: 16px; }
@@ -232,6 +228,7 @@ code, .mono { font-family: var(--mono); }
   padding: 20px 16px 16px;
   border-bottom: 1px solid var(--border);
 }
+.sidebar-brand-logo { display: block; flex-shrink: 0; }
 .sidebar-brand-name {
   font-size: 1rem;
   font-weight: 700;
@@ -1121,4 +1118,294 @@ code, .mono { font-family: var(--mono); }
 }
 @media (max-width: 480px) {
   .metrics-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Settings page ─────────────────────────────────
+   Collapsible, grouped sections. Previously every setting was an
+   always-open card stacked vertically, so the page was a long scroll in
+   which the thing you came to change was never on screen.
+──────────────────────────────────────────────────── */
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  max-width: 860px;
+}
+
+.settings-group { display: flex; flex-direction: column; gap: 10px; }
+
+.settings-group-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  padding-left: 2px;
+}
+
+.settings-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+.settings-section:hover { border-color: var(--border-2); }
+.settings-section.is-open { border-color: var(--border-2); }
+
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.settings-section-head:hover { background: var(--surface-2); }
+.settings-section-head:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.settings-section-icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  font-size: 1rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.settings-section.is-open .settings-section-icon {
+  background: var(--accent-dim);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.settings-section-titles { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-section-title  { font-size: 0.9rem; font-weight: 600; color: var(--text); }
+.settings-section-desc {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.settings-section-summary { flex-shrink: 0; }
+
+.settings-section-chevron {
+  flex-shrink: 0;
+  font-size: 1.3rem;
+  line-height: 1;
+  color: var(--text-dim);
+  transform: rotate(90deg);
+  transition: transform 0.2s, color 0.2s;
+}
+.settings-section.is-open .settings-section-chevron {
+  transform: rotate(270deg);
+  color: var(--text-muted);
+}
+
+.settings-section-body {
+  padding: 4px 16px 18px;
+  border-top: 1px solid var(--border);
+  animation: settings-reveal 0.18s ease-out;
+}
+@keyframes settings-reveal {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+.settings-section-body > :first-child { margin-top: 14px; }
+
+.settings-help {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin-bottom: 14px;
+}
+.settings-footnote {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin-top: 12px;
+}
+.form-label-hint { color: var(--text-dim); font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+.inline-msg {
+  border-radius: var(--r);
+  padding: 9px 12px;
+  font-size: 0.82rem;
+  margin-top: 12px;
+  border: 1px solid;
+}
+.inline-msg[data-ok="true"]  { background: var(--green-dim); border-color: rgba(34,197,94,0.35); color: var(--green); }
+.inline-msg[data-ok="false"] { background: var(--red-dim);   border-color: rgba(239,68,68,0.35); color: var(--red); }
+
+/* ── AI credential chain ───────────────────────────
+   An ordered list, because the order IS the failover behaviour — the
+   rank number and the up/down controls are the feature, not decoration.
+──────────────────────────────────────────────────── */
+.cred-list { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+
+.cred-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-2);
+  border-radius: var(--r);
+}
+.cred-row-failing { border-left-color: var(--red); }
+.cred-row-off     { opacity: 0.55; border-left-color: var(--text-dim); }
+.cred-row:first-child:not(.cred-row-off):not(.cred-row-failing) { border-left-color: var(--green); }
+
+.cred-rank {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--surface-3);
+  border-radius: 50%;
+}
+
+.cred-main { flex: 1; min-width: 0; }
+
+.cred-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cred-label { font-size: 0.9rem; font-weight: 600; color: var(--text); }
+.cred-model { font-family: var(--mono); font-size: 0.75rem; color: var(--text-muted); }
+
+.cred-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 5px;
+}
+.cred-meta code { font-family: var(--mono); color: var(--text-muted); }
+
+.cred-error {
+  margin-top: 8px;
+  padding: 7px 10px;
+  background: var(--red-dim);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  border-radius: var(--r-sm);
+  font-size: 0.78rem;
+  color: var(--red);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.cred-error strong { font-weight: 600; }
+
+.cred-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.cred-move { display: flex; flex-direction: column; gap: 2px; }
+.cred-move .btn { padding: 1px 7px; font-size: 0.7rem; line-height: 1.5; }
+
+.cred-form {
+  margin-top: 12px;
+  padding: 14px;
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r);
+}
+.cred-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 4px 14px;
+}
+.cred-form-wide { grid-column: 1 / -1; }
+.cred-form-actions { display: flex; gap: 8px; margin-top: 4px; }
+
+@media (max-width: 860px) {
+  .cred-row { flex-wrap: wrap; }
+  .cred-actions { width: 100%; justify-content: flex-start; }
+  .settings-section-desc { display: none; }
+}
+
+.cred-note {
+  margin-top: 8px;
+  padding: 7px 10px;
+  background: var(--yellow-dim);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: var(--r-sm);
+  font-size: 0.78rem;
+  color: var(--yellow);
+  line-height: 1.5;
+}
+
+/* ── Access scope ──────────────────────────────────── */
+.access-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  cursor: pointer;
+}
+.access-toggle input { margin-top: 3px; flex-shrink: 0; }
+.access-toggle > span { display: flex; flex-direction: column; gap: 3px; }
+.access-toggle-desc { font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; }
+
+.access-section { margin-top: 18px; }
+.access-section-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.access-empty {
+  padding: 12px 14px;
+  border: 1px dashed var(--border-2);
+  border-radius: var(--r);
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.access-path-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.access-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--cyan);
+  border-radius: var(--r);
+}
+.access-path code { font-family: var(--mono); font-size: 0.82rem; color: var(--text); }
+.access-path-label { font-size: 0.75rem; color: var(--text-dim); }
+.access-path .btn { margin-left: auto; }
+
+.access-add { display: flex; gap: 8px; margin-top: 12px; }
+.access-add .form-input { flex: 1; }
+
+.access-suggestions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
 }

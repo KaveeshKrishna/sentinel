@@ -1,67 +1,107 @@
 'use strict';
 
-const { getSetting, setSetting, deleteSetting } = require('../db/settings');
-const { encrypt, decrypt } = require('../crypto/aesGcm');
+const { getSetting, deleteSetting } = require('../db/settings');
+const {
+  PROVIDERS, listCredentials, listUsableCredentials,
+  addCredential, updateCredential, deleteCredential
+} = require('./aiCredentials');
 
-const PROVIDERS = ['anthropic', 'gemini', 'openai-compatible'];
+/**
+ * Single-provider facade over the credential pool (`ai_credentials`).
+ *
+ * Phase 3 stored exactly one provider here, in the `settings` table.
+ * Sentinel now keeps an ordered list of them with automatic failover
+ * (settings/aiCredentials.js, ai/failover.js), but a lot of code only
+ * ever needed the questions this module already answered — "is an AI
+ * provider configured at all?" (the detector's and engine's gate) and
+ * "which provider/model should I name in this ai_runs row?". Those
+ * callers keep working unchanged; they now read the *primary*
+ * (highest-priority) credential rather than a lone one.
+ *
+ * The pool is the single source of truth. `settings`' old `ai.*` keys
+ * are migrated into it by migration 013 and are only deleted here, never
+ * written again — leaving two places that both claim to hold the
+ * configured provider is exactly how they drift apart.
+ */
 
-const KEY_PROVIDER = 'ai.provider';
-const KEY_MODEL = 'ai.model';
-const KEY_BASE_URL = 'ai.baseUrl';
-const KEY_API_KEY_ENC = 'ai.apiKeyEnc';
+const LEGACY_KEYS = ['ai.provider', 'ai.model', 'ai.baseUrl', 'ai.apiKeyEnc'];
 
 function keySuffix(rawKey) {
   if (!rawKey) return null;
   return rawKey.length <= 4 ? rawKey : rawKey.slice(-4);
 }
 
+/** The first credential the failover chain would try, or null. */
+function primaryCredential() {
+  return listCredentials()[0] || null;
+}
+
 /**
- * Read-only view for the frontend/routes: never the raw key, only a
- * suffix. Falls back to env vars (AI_PROVIDER/AI_MODEL/AI_API_KEY/
- * AI_BASE_URL) when nothing has been saved yet, per the original plan's
- * bootstrap fallback — the env key's suffix is computed without ever
- * persisting the env value itself.
+ * Read-only view for routes and for ai_runs bookkeeping: never the raw
+ * key, only a suffix. Falls back to the env-var bootstrap
+ * (AI_PROVIDER/AI_MODEL/AI_API_KEY/AI_BASE_URL) when no credential has
+ * been saved, computing the env key's suffix without persisting it.
  */
 function getAIConfig() {
-  const provider = getSetting(KEY_PROVIDER) || process.env.AI_PROVIDER || null;
-  const model = getSetting(KEY_MODEL) || process.env.AI_MODEL || null;
-  const baseUrl = getSetting(KEY_BASE_URL) || process.env.AI_BASE_URL || null;
-  const encKey = getSetting(KEY_API_KEY_ENC);
+  const primary = primaryCredential();
+  const usableCount = listUsableCredentials().length;
 
-  const hasSavedKey = !!encKey;
-  const hasEnvKey = !hasSavedKey && !!process.env.AI_API_KEY;
+  if (primary) {
+    return {
+      configured: usableCount > 0,
+      provider: primary.provider,
+      model: primary.model,
+      baseUrl: primary.baseUrl,
+      keySuffix: primary.keySuffix,
+      credentialCount: listCredentials().length,
+      usableCount
+    };
+  }
 
+  const provider = process.env.AI_PROVIDER || null;
+  const hasEnvKey = !!process.env.AI_API_KEY;
   return {
-    configured: !!provider && (hasSavedKey || hasEnvKey),
+    configured: !!provider && hasEnvKey,
     provider,
-    model,
-    baseUrl,
-    keySuffix: hasSavedKey ? keySuffix(decrypt(encKey)) : (hasEnvKey ? keySuffix(process.env.AI_API_KEY) : null)
+    model: process.env.AI_MODEL || null,
+    baseUrl: process.env.AI_BASE_URL || null,
+    keySuffix: hasEnvKey ? keySuffix(process.env.AI_API_KEY) : null,
+    credentialCount: 0,
+    usableCount: 0
   };
 }
 
+/**
+ * Create or update the primary credential. Preserves the old
+ * "blank apiKey keeps the saved key" semantics, which the Settings form
+ * relies on.
+ */
 function setAIConfig({ provider, model, baseUrl, apiKey }) {
+  const primary = primaryCredential();
+  if (primary) {
+    return updateCredential(primary.id, { provider, model: model || null, baseUrl: baseUrl || null, apiKey });
+  }
   if (!PROVIDERS.includes(provider)) {
     throw new Error(`Unknown AI provider "${provider}" — must be one of ${PROVIDERS.join(', ')}`);
   }
-  setSetting(KEY_PROVIDER, provider);
-  setSetting(KEY_MODEL, model || '');
-  setSetting(KEY_BASE_URL, baseUrl || '');
-  if (apiKey) setSetting(KEY_API_KEY_ENC, encrypt(apiKey));
+  return addCredential({ label: 'Primary', provider, model, baseUrl, apiKey });
 }
 
+/** Remove every saved credential (and any leftover pre-013 settings rows). */
 function clearAIConfig() {
-  for (const key of [KEY_PROVIDER, KEY_MODEL, KEY_BASE_URL, KEY_API_KEY_ENC]) deleteSetting(key);
+  for (const credential of listCredentials()) deleteCredential(credential.id);
+  for (const key of LEGACY_KEYS) if (getSetting(key) !== null) deleteSetting(key);
 }
 
 /**
- * Internal-only: the plaintext API key, for the orchestrator and the
- * settings "test connection" route. Never import this from a route
- * handler that returns its result directly to the client.
+ * Internal-only: the primary credential's plaintext API key. Never
+ * import this from a route handler that returns its result to the
+ * client. Failover uses listUsableCredentials() instead — this is only
+ * for the callers that genuinely mean "the primary one".
  */
 function getDecryptedAPIKey() {
-  const encKey = getSetting(KEY_API_KEY_ENC);
-  if (encKey) return decrypt(encKey);
+  const usable = listUsableCredentials();
+  if (usable.length > 0) return usable[0].apiKey;
   return process.env.AI_API_KEY || null;
 }
 

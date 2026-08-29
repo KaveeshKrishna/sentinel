@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 
 function fmt(ms) {
   const s = Math.floor(ms / 1000);
@@ -88,7 +89,7 @@ export default function RecordingControl() {
             disabled={loading}
             style={{ marginLeft: 'auto' }}
           >
-            {loading ? '…' : '⏹ Stop Recording'}
+            {loading ? '…' : <><Icon name="square" size={12} /> Stop Recording</>}
           </button>
         </>
       ) : (
@@ -111,7 +112,7 @@ export default function RecordingControl() {
             onClick={start}
             disabled={loading}
           >
-            {loading ? '…' : '⏺ Start Recording'}
+            {loading ? '…' : <><Icon name="circle" size={12} /> Start Recording</>}
           </button>
           {state.sessionId && (
             <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginLeft: 8 }}>

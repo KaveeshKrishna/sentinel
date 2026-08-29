@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../api/client';
 import StatusBadge from './StatusBadge';
+import Icon from './Icon';
 
 function fmt(bytes) {
   if (!bytes) return '0 B';
@@ -45,7 +46,7 @@ export default function ContainerPanel({ container, onClose }) {
             <div className="panel-title">{container.name}</div>
             <StatusBadge status={container.state} />
           </div>
-          <button id="panel-close" className="btn btn-secondary btn-sm btn-icon" onClick={onClose}>✕</button>
+          <button id="panel-close" className="btn btn-secondary btn-sm btn-icon" onClick={onClose}><Icon name="x" size={12} /></button>
         </div>
 
         <div className="panel-body">
@@ -64,7 +65,7 @@ export default function ContainerPanel({ container, onClose }) {
                 </button>
               )}
               <button id="btn-container-restart" className="btn btn-secondary btn-sm" onClick={() => doAction('restart')} disabled={!!action}>
-                {action === 'restart' ? '…' : '↺ Restart'}
+                {action === 'restart' ? '…' : <><Icon name="refresh-cw" size={12} /> Restart</>}
               </button>
             </div>
           </div>

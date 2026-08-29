@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../api/client';
+import Icon from '../shared/Icon';
 import StatusBadge from '../shared/StatusBadge';
 import ContainerPanel from '../shared/ContainerPanel';
 
@@ -35,8 +36,8 @@ export default function DockerSection() {
     <>
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <div className="card-title" style={{ marginBottom: 0 }}>🐳 Containers ({containers.length})</div>
-          <button id="btn-refresh-containers" className="btn btn-secondary btn-sm" onClick={load}>↺ Refresh</button>
+          <div className="card-title" style={{ marginBottom: 0 }}><Icon name="box" /> Containers ({containers.length})</div>
+          <button id="btn-refresh-containers" className="btn btn-secondary btn-sm" onClick={load}><Icon name="refresh-cw" size={12} /> Refresh</button>
         </div>
         <div className="table-wrap">
           <table className="data-table">

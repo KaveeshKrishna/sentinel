@@ -1,4 +1,5 @@
 import Sparkline from './Sparkline';
+import Icon from './Icon';
 
 const COLOR_MAP = {
   blue:   '#3b82f6',
@@ -16,7 +17,7 @@ export default function MetricCard({ title, value, unit, sub, color = 'blue', ic
     <div className="metric-card">
       <div className="metric-header">
         <div className="metric-icon" style={{ background: `${c}18`, color: c }}>
-          {icon}
+          <Icon name={icon} size={16} />
         </div>
         <span className="metric-label">{title}</span>
       </div>
