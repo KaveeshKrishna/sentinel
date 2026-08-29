@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import RecordingControl from '../components/recording/RecordingControl';
+import ToastHost from '../components/shared/ToastHost';
 import Overview    from '../components/sections/Overview';
 import Hardware    from '../components/sections/Hardware';
 import DockerSection from '../components/sections/DockerSection';
@@ -14,7 +16,32 @@ import Incidents   from '../components/sections/Incidents';
 import IncidentDetail from '../components/sections/IncidentDetail';
 import Settings    from '../components/sections/Settings';
 import { useAuth, apiLogout } from '../hooks/useAuth';
-import { useMetrics } from '../hooks/useWebSocket';
+import { useMetrics, useLiveEvents } from '../hooks/useWebSocket';
+import { api } from '../api/client';
+
+const TERMINAL_STATES = ['RESOLVED', 'FAILED', 'DISMISSED'];
+
+/**
+ * Count of incidents still needing attention, for the sidebar badge.
+ * Refetched whenever the server pushes an incident change, so the badge
+ * tracks reality without its own poll.
+ */
+function useOpenIncidentCount() {
+  const { incidentTick } = useLiveEvents();
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/incidents')
+      .then(list => {
+        if (!cancelled) setCount(list.filter(i => !TERMINAL_STATES.includes(i.status)).length);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [incidentTick]);
+
+  return count;
+}
 
 const TABS = [
   { id: 'overview',     label: 'Overview',     icon: 'grid',        group: 'Monitor' },
@@ -75,6 +102,7 @@ export default function Dashboard() {
   const { connected } = useMetrics() || {};
   const navigate = useNavigate();
   const location = useLocation();
+  const openIncidents = useOpenIncidentCount();
 
   const activeTab = location.pathname.split('/')[1] || 'overview';
   const info = TAB_TITLES[activeTab] || TAB_TITLES.overview;
@@ -109,6 +137,9 @@ export default function Dashboard() {
                 >
                   <NavIcon name={tab.icon} />
                   <span>{tab.label}</span>
+                  {tab.id === 'incidents' && openIncidents > 0 && (
+                    <span className="nav-badge" id="nav-incidents-count">{openIncidents}</span>
+                  )}
                 </NavLink>
               ))}
             </div>
@@ -133,6 +164,9 @@ export default function Dashboard() {
       </aside>
 
       <div className="main-content">
+        {/* Live incident toasts (fixed overlay, renders nothing when idle) */}
+        <ToastHost />
+
         {/* Recording banner (always visible) */}
         <RecordingControl />
 

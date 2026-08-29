@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
 import StatusBadge from '../shared/StatusBadge';
+import IncidentTimeline from './IncidentTimeline';
+import { useLiveEvents } from '../../hooks/useWebSocket';
 
 const RISK_COLOR = {
   READ_ONLY: 'var(--text-muted)',
@@ -37,6 +39,7 @@ export default function IncidentDetail() {
   const [dismissing, setDismissing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [rediagnosing, setRediagnosing] = useState(false);
+  const { lastIncident, incidentTick } = useLiveEvents();
 
   const load = useCallback(async () => {
     try {
@@ -50,6 +53,14 @@ export default function IncidentDetail() {
   }, [id]);
 
   useEffect(() => { setLoading(true); load(); }, [load]);
+
+  // The engine advances an incident through several states on its own
+  // (INVESTIGATING -> DIAGNOSED -> ... and auto-remediation end to end).
+  // Refetch when the server says *this* incident changed, so the page
+  // follows along instead of showing a stale state until a manual action.
+  useEffect(() => {
+    if (lastIncident && String(lastIncident.id) === String(id)) load();
+  }, [incidentTick, lastIncident, id, load]);
 
   async function approve(actionId) {
     setBusyActionId(actionId);
@@ -146,6 +157,8 @@ export default function IncidentDetail() {
           <div className="info-row"><span className="info-key">Resolved</span><span className="info-val">{fmtDate(incident.resolved_at)}</span></div>
         )}
       </div>
+
+      <IncidentTimeline incidentId={incident.id} refreshKey={incidentTick} />
 
       {diagnosis ? (
         <div className="card">

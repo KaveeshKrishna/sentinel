@@ -1,6 +1,7 @@
 'use strict';
 
 const { getDb } = require('../db/connection');
+const { publish } = require('../events/publish');
 
 const EVENT_META = {
   SSH_LOGIN:            { icon: '🔐', color: '#3b82f6' },
@@ -26,6 +27,13 @@ const EVENT_META = {
   INCIDENT_ACTION_EXECUTED: { icon: '⚙',  color: '#3b82f6' },
   INCIDENT_RESOLVED:        { icon: '✔',  color: '#22c55e' },
   INCIDENT_FAILED:          { icon: '❌', color: '#ef4444' },
+  // Emitted by engine.js/detector.js since the post-cutover rounds but
+  // never registered here, so they rendered with the generic '•'.
+  INCIDENT_AUTO_REMEDIATE:  { icon: '🤖', color: '#06b6d4' },
+  INCIDENT_REDIAGNOSE:      { icon: '🔄', color: '#a855f7' },
+  INCIDENT_STALE_REDIAGNOSE:{ icon: '🕓', color: '#a855f7' },
+  INCIDENT_ACTION_FAILED:   { icon: '⚠',  color: '#ef4444' },
+  INCIDENT_ACTION_REJECTED: { icon: '↩',  color: '#f59e0b' },
   AI_CALL_FAILED:           { icon: '⚠',  color: '#f59e0b' }
 };
 
@@ -51,8 +59,15 @@ function getStmts() {
 function logEvent(type, message, details = null) {
   const { insertStmt: insert } = getStmts();
   const timestamp = Date.now();
-  insert.run(type, message, details ? JSON.stringify(details) : null, timestamp);
+  const id = insert.run(type, message, details ? JSON.stringify(details) : null, timestamp).lastInsertRowid;
   console.log(`[${type}] ${message}`);
+
+  // Push to any connected browser in the same shape getEvents() returns,
+  // so the Activity timeline can prepend it without a refetch.
+  publish('activity', {
+    id, timestamp, type, message, details,
+    ...(EVENT_META[type] || { icon: '•', color: '#7d8590' })
+  });
 }
 
 function getEvents(limit = 100) {

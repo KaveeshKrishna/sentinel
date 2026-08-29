@@ -5,6 +5,7 @@ const router = express.Router();
 const store = require('../incidents/store');
 const engine = require('../incidents/engine');
 const { STATES } = require('../incidents/states');
+const { getTimeline } = require('../incidents/timeline');
 const { getResource } = require('../graph/resources');
 
 // Resource id -> {type, name} is cheap (resources are few, unindexed reads
@@ -44,6 +45,16 @@ router.post('/:id/approve', async (req, res) => {
     if (err.name === 'IllegalTransitionError') return res.status(409).json({ error: err.message });
     res.status(502).json({ error: err.message });
   }
+});
+
+// Everything recorded about one incident, merged into a single ordered
+// list plus a per-stage rollup for the OBSERVE -> DIAGNOSE -> PLAN ->
+// ACT -> VERIFY strip. Read-only over tables that were previously
+// write-only from the API's perspective.
+router.get('/:id/timeline', (req, res) => {
+  const incident = store.getIncident(Number(req.params.id));
+  if (!incident) return res.status(404).json({ error: 'Incident not found' });
+  res.json(getTimeline(incident.id, incident));
 });
 
 // Bulk delete — filter-aware "Clear" button in the UI. `?status=FAILED`

@@ -4,6 +4,7 @@ const WebSocket = require('ws');
 const { verifyToken } = require('../auth/middleware');
 const { parseCookies } = require('../utils/cookies');
 const { getAgentClient } = require('../agent/client');
+const { setSink } = require('../events/publish');
 
 let wss = null;
 let ticker = null;
@@ -39,6 +40,10 @@ function isAllowedOrigin(request) {
 
 function initBroadcaster(server) {
   wss = new WebSocket.Server({ noServer: true });
+
+  // Let the rest of the server push events without depending on this
+  // module (see events/publish.js for why the direction matters).
+  setSink(broadcast);
 
   server.on('upgrade', (request, socket, head) => {
     if (request.url !== '/ws') {

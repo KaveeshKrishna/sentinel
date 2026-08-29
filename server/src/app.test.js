@@ -366,6 +366,32 @@ test('POST /api/incidents/:id/dismiss moves a non-terminal incident to DISMISSED
   });
 });
 
+test('GET /api/incidents/:id/timeline returns ordered entries and a five-stage rollup', async () => {
+  await withServer(async (base) => {
+    const auth = await loginAndGetAuthHeader(base);
+    const resource = upsertResource({ type: 'service', externalId: 'tl-http-' + crypto.randomUUID(), name: 'caddy' });
+    const incident = store.createIncident({ resourceId: resource.id, triggerRule: 'service_inactive', triggerSummary: 'inactive' });
+    store.updateIncidentStatus(incident.id, 'INVESTIGATING');
+    store.updateIncidentStatus(incident.id, 'DIAGNOSED');
+
+    const res = await fetch(`${base}/api/incidents/${incident.id}/timeline`, { headers: auth });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+
+    assert.equal(body.phases.length, 5);
+    assert.deepEqual(body.phases.map(p => p.phase), ['OBSERVE', 'DIAGNOSE', 'PLAN', 'ACT', 'VERIFY']);
+    assert.deepEqual(
+      body.entries.filter(e => e.kind === 'transition').map(e => e.to),
+      ['DETECTED', 'INVESTIGATING', 'DIAGNOSED']
+    );
+    assert.equal(body.phases[1].status, 'active'); // DIAGNOSE is the furthest reached, incident still open
+    assert.equal(body.phases[4].status, 'pending');
+
+    const missing = await fetch(`${base}/api/incidents/999999/timeline`, { headers: auth });
+    assert.equal(missing.status, 404);
+  });
+});
+
 test('incident routes 404 for an unknown id', async () => {
   await withServer(async (base) => {
     const auth = await loginAndGetAuthHeader(base);

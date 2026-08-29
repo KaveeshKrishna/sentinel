@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../api/client';
 import StatusBadge from '../shared/StatusBadge';
+import { useLiveEvents } from '../../hooks/useWebSocket';
 
 const SEVERITY_COLOR = { high: 'var(--red)', medium: 'var(--yellow)', unknown: 'var(--text-dim)' };
 
@@ -27,6 +28,7 @@ export default function Incidents() {
   const [loading, setLoading]     = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
   const [clearing, setClearing]   = useState(false);
+  const { incidentTick } = useLiveEvents();
   const navigate = useNavigate();
 
   async function load() {
@@ -66,6 +68,9 @@ export default function Incidents() {
     }
   }
 
+  // The 8s poll is now a fallback: incidentTick makes the list refresh
+  // the moment the server pushes a change, so a new incident appears
+  // immediately rather than up to 8 seconds late.
   useEffect(() => {
     setLoading(true);
     load();
@@ -73,6 +78,11 @@ export default function Incidents() {
     return () => clearInterval(p);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter]);
+
+  useEffect(() => {
+    if (incidentTick > 0) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidentTick]);
 
   const openCount = incidents.filter(i => !['RESOLVED', 'FAILED', 'DISMISSED'].includes(i.status)).length;
 

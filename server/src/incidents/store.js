@@ -2,6 +2,28 @@
 
 const { getDb } = require('../db/connection');
 const { canTransition } = require('./states');
+const { recordTransition } = require('./timeline');
+const { publish } = require('../events/publish');
+
+/**
+ * The shape pushed to browsers on any incident create/transition. Kept
+ * deliberately small — enough for a toast and a "something changed,
+ * refetch" signal, not a replacement for GET /api/incidents/:id.
+ */
+function publishIncident(incident, previousStatus = null) {
+  if (!incident) return;
+  publish('incident', {
+    id: incident.id,
+    status: incident.status,
+    previousStatus,
+    severity: incident.severity,
+    resourceId: incident.resource_id,
+    triggerRule: incident.trigger_rule,
+    triggerSummary: incident.trigger_summary,
+    rootCause: incident.root_cause,
+    updatedAt: incident.updated_at
+  });
+}
 
 class IllegalTransitionError extends Error {
   constructor(from, to) {
@@ -81,7 +103,10 @@ function createIncident({ resourceId, severity = 'unknown', triggerRule, trigger
     INSERT INTO incidents (resource_id, status, severity, trigger_rule, trigger_summary, detected_at, updated_at)
     VALUES (?, 'DETECTED', ?, ?, ?, ?, ?)
   `).run(resourceId, severity, triggerRule, triggerSummary, now, now).lastInsertRowid;
-  return getIncident(id);
+  recordTransition(id, null, 'DETECTED', triggerSummary, now);
+  const incident = getIncident(id);
+  publishIncident(incident, null);
+  return incident;
 }
 
 function getIncident(id) {
@@ -124,10 +149,14 @@ function updateIncidentStatus(id, newStatus, extra = {}) {
   if (!current) throw new Error(`Incident ${id} not found`);
   if (!canTransition(current.status, newStatus)) throw new IllegalTransitionError(current.status, newStatus);
 
-  const fields = { updated_at: Date.now(), status: newStatus, ...extra };
+  const now = Date.now();
+  const fields = { updated_at: now, status: newStatus, ...extra };
   const setClause = Object.keys(fields).map(k => `${k} = ?`).join(', ');
   getDb().prepare(`UPDATE incidents SET ${setClause} WHERE id = ?`).run(...Object.values(fields), id);
-  return getIncident(id);
+  recordTransition(id, current.status, newStatus, null, now);
+  const incident = getIncident(id);
+  publishIncident(incident, current.status);
+  return incident;
 }
 
 function recordDiagnosis(id, diagnosis) {
