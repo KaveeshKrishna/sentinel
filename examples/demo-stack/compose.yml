@@ -1,0 +1,35 @@
+# Self-contained demo stack for rehearsing Sentinel's incident-detection
+# loop. Distinct project name and an internal-only network so this can
+# never collide with, or be confused for, your other production services.
+#
+# Usage: docker compose -p sentinel-demo -f examples/demo-stack/compose.yml up -d
+
+name: sentinel-demo
+
+services:
+  demo-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: demo
+    networks:
+      - demo-net
+
+  demo-api:
+    build: ./demo-api
+    depends_on:
+      - demo-db
+    environment:
+      DEMO_DB_HOST: demo-db
+      DEMO_DB_USER: demo
+      DEMO_DB_PASSWORD: demo
+      DEMO_DB_NAME: demo
+    ports:
+      - "127.0.0.1:8890:3000"
+    networks:
+      - demo-net
+
+networks:
+  demo-net:
+    driver: bridge

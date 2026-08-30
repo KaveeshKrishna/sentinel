@@ -1,0 +1,45 @@
+[Unit]
+Description=Sentinel Server — unprivileged control plane (UI, API, AI)
+Documentation=https://github.com/PLACEHOLDER_ORG/PLACEHOLDER_REPO
+After=network.target sentinel-agent.service
+Wants=network.target sentinel-agent.service
+
+[Service]
+Type=simple
+User=sentinel
+Group=sentinel
+
+WorkingDirectory=/usr/lib/sentinel/server
+EnvironmentFile=/etc/sentinel/server.env
+ExecStart=/usr/bin/node src/server.js
+
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+# server/ holds no host privilege at all — it reaches the host only
+# through the agent's Unix socket. These directives are best-effort
+# sandboxing on top of that; they narrow what an RCE in this process
+# (which does host arbitrary AI-provider network calls, unlike the
+# agent) could reach even before it would have to get past the tool
+# registry to do anything privileged.
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+# Explicit read-write allowlist: the database dir, the log dir, and the
+# runtime dir the agent's socket lives in (needed to connect out, not to
+# create anything there).
+ReadWritePaths=/var/lib/sentinel /var/log/sentinel
+ReadOnlyPaths=/run/sentinel
+
+[Install]
+WantedBy=multi-user.target

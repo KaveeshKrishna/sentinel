@@ -1,0 +1,59 @@
+# ── Secrets & environment ──────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Local AI-assistant / editor context (never publish) ──
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.cursor/
+.aider*
+*.plan.md
+
+# ── Node modules ──────────────────────────────────
+node_modules/
+server/node_modules/
+agent/node_modules/
+frontend/node_modules/
+cli/node_modules/
+
+# ── Build outputs ─────────────────────────────────
+frontend/dist/
+server/public/
+sentinel-demo/dist/
+
+# ── Runtime data ──────────────────────────────────
+server/data/
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Logs ──────────────────────────────────────────
+*.log
+logs/
+
+# ── OS / Editor ───────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Secrets (misc) ────────────────────────────────
+*.pem
+*.key
+*.crt
+id_rsa
+id_rsa.pub
+credentials.json
+/etc/sentinel/
+
+# ── Coverage / tooling caches ──────────────────────
+coverage/
+.nyc_output/
+*.tsbuildinfo
+.cache/
+.vite/
+.eslintcache

@@ -1,0 +1,35 @@
+[Unit]
+Description=Sentinel Agent — privileged host access (systemctl, Docker, /proc)
+Documentation=https://github.com/PLACEHOLDER_ORG/PLACEHOLDER_REPO
+After=network.target docker.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=sentinel
+
+# Creates /run/sentinel owned root:sentinel, mode 0750. The agent then
+# chmods its own socket file to 0660 — combined with the 0750 directory,
+# only root and members of the sentinel group can reach the socket at
+# all, and only root/sentinel-group can read/write it once there.
+RuntimeDirectory=sentinel
+RuntimeDirectoryMode=0750
+
+WorkingDirectory=/usr/lib/sentinel/agent
+EnvironmentFile=/etc/sentinel/agent.env
+ExecStart=/usr/bin/node src/index.js
+
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+# The agent is intentionally NOT sandboxed the way sentinel-server is —
+# it needs real root: systemctl, the Docker socket, and host /proc/sys.
+# Its safety boundary is the tool registry (see agent/src/registry.js),
+# not systemd confinement. Do not add ProtectSystem=/ReadOnlyPaths= here
+# without re-auditing every tool that needs write access (git deploys,
+# service control).
+
+[Install]
+WantedBy=multi-user.target

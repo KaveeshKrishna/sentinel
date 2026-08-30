@@ -1,0 +1,41 @@
+# Example Caddyfile — Sentinel integration
+#
+# This shows the minimum Caddy configuration Sentinel's website discovery
+# and network-analytics features expect. Adapt the domains and upstream
+# ports to your own sites; do not copy this verbatim into production.
+#
+# Apply with:
+#   sudo cp examples/Caddyfile.example /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+
+# Any site you want Sentinel to discover and monitor should log in JSON
+# format to a location Sentinel is configured to read (CADDY_LOG).
+http://app.your-domain.example {
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 100mb
+            roll_keep 10
+        }
+        format json
+    }
+    reverse_proxy 127.0.0.1:8081
+}
+
+http://admin.your-domain.example {
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 100mb
+            roll_keep 10
+        }
+        format json
+    }
+    reverse_proxy 127.0.0.1:8082
+}
+
+# Sentinel's own web UI, once installed (see README for the installer).
+http://sentinel.your-domain.example {
+    reverse_proxy 127.0.0.1:8888
+}
+
+# Refer to the Caddy docs for more information:
+# https://caddyserver.com/docs/caddyfile
