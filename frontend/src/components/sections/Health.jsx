@@ -6,6 +6,13 @@ function relativeLatency(ms) {
   return `${ms}ms`;
 }
 
+const AI_WINDOWS = [
+  { id: '24h', label: 'Last 24 hours' },
+  { id: '7d',  label: 'Last 7 days' },
+  { id: '15d', label: 'Last 15 days' },
+  { id: '30d', label: 'Last month' }
+];
+
 function Tile({ label, ok, warn, value, detail }) {
   const tone = ok ? 'green' : warn ? 'yellow' : 'red';
   return (
@@ -39,11 +46,12 @@ export default function Health() {
   const [credentials, setCredentials] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
+  const [aiWindow, setAiWindow] = useState('7d');
 
   async function load() {
     try {
       const [overview, credResp] = await Promise.all([
-        api.get('/health/overview'),
+        api.get(`/health/overview?aiWindow=${aiWindow}`),
         api.get('/settings/ai/credentials')
       ]);
       setData(overview);
@@ -60,7 +68,8 @@ export default function Health() {
     load();
     const t = setInterval(load, 30000);
     return () => clearInterval(t);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiWindow]);
 
   if (loading) return <div className="empty-state"><div className="boot-spinner" /></div>;
   if (error || !data) return <div className="empty-state"><p>{error || 'No data'}</p></div>;
@@ -91,14 +100,25 @@ export default function Health() {
       </div>
 
       <div className="card">
-        <div className="card-title">AI spend — last 7 days</div>
-        <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div className="card-title" style={{ marginBottom: 0 }}>AI spend</div>
+          <select
+            id="select-ai-spend-window"
+            className="form-input"
+            style={{ width: 'auto', padding: '5px 10px', fontSize: '0.8rem' }}
+            value={aiWindow}
+            onChange={e => setAiWindow(e.target.value)}
+          >
+            {AI_WINDOWS.map(w => <option key={w.id} value={w.id}>{w.label}</option>)}
+          </select>
+        </div>
+        <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '10px 0 12px' }}>
           A failed provider attempt still costs a request but its token count is unknown — totals below are a
           floor, not an exact figure.
         </p>
         {data.aiRuns.byCredential.length === 0 ? (
           <div className="empty-state" style={{ padding: '18px 0' }}>
-            <p>No AI requests in the last 7 days.</p>
+            <p>No AI requests in the {AI_WINDOWS.find(w => w.id === aiWindow)?.label.toLowerCase()}.</p>
           </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>

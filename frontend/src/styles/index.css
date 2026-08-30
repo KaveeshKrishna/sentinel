@@ -47,6 +47,12 @@
 
   /* Sidebar */
   --sidebar-w: 220px;
+  /* Shared by .sidebar-brand and .content-header so their bottom
+     borders land on the same line across the sidebar/main-content
+     split — both are top-of-column siblings starting at y:0, so an
+     identical explicit height is what keeps them aligned regardless of
+     which one's content happens to be taller. */
+  --topbar-h: 64px;
 }
 
 /* ── Reset ─────────────────────────────────────────── */
@@ -209,41 +215,118 @@ code, .mono { font-family: var(--mono); }
 }
 
 /* ── Sidebar ───────────────────────────────────────── */
-.sidebar {
+/* .sidebar-wrap owns layout (width on desktop, off-canvas position on
+   mobile); .sidebar is just its scrollable content. Splitting them out
+   is what lets the collapse toggle live outside .sidebar's own
+   overflow-x:hidden — it needs to poke out past the edge. */
+.sidebar-wrap {
+  position: relative;
   width: var(--sidebar-w);
-  min-width: var(--sidebar-w);
+  flex-shrink: 0;
+  transition: width 0.18s ease;
+  z-index: 20;
+}
+.sidebar-wrap.collapsed { width: 72px; }
+
+.sidebar {
+  width: 100%;
+  height: 100%;
   background: var(--surface);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
-  z-index: 10;
+}
+
+.sidebar-toggle {
+  position: absolute;
+  top: 22px;
+  right: -12px;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  border: 2px solid var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  z-index: 25;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+.sidebar-toggle:hover { background: #2563eb; }
+.sidebar-toggle svg { width: 13px; height: 13px; transition: transform 0.18s ease; }
+.sidebar-wrap.collapsed .sidebar-toggle svg { transform: rotate(180deg); }
+
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 90;
+  animation: fadeIn 0.15s ease;
 }
 
 .sidebar-brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 20px 16px 16px;
+  height: var(--topbar-h);
+  flex-shrink: 0; /* .content-header has this too — without it, a short
+    viewport (little vertical room for 14 nav items + this) lets the
+    flexbox shrink algorithm squash this one below --topbar-h while
+    .content-header stays put, throwing the two bottom borders out of
+    alignment again. */
+  padding: 0 16px;
   border-bottom: 1px solid var(--border);
 }
-.sidebar-brand-logo { display: block; flex-shrink: 0; }
-.sidebar-brand-name {
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--accent);
-  letter-spacing: -0.02em;
+.sidebar-brand-icon { display: none; height: 28px; width: auto; flex-shrink: 0; }
+.sidebar-brand-full { display: block; height: 34px; width: auto; flex-shrink: 0; }
+
+/* Desktop/tablet collapse — icon rail, no labels. Scoped above the
+   mobile breakpoint so it never fights the drawer's own full-width
+   rules below. */
+@media (min-width: 769px) {
+  .sidebar-wrap.collapsed .sidebar-brand { justify-content: center; padding: 0 8px; }
+  .sidebar-wrap.collapsed .sidebar-brand-icon { display: block; }
+  .sidebar-wrap.collapsed .sidebar-brand-full { display: none; }
+  .sidebar-wrap.collapsed .nav-label,
+  .sidebar-wrap.collapsed .nav-section-label { display: none; }
+  .sidebar-wrap.collapsed .nav-item { justify-content: center; padding: 10px 6px; position: relative; }
+  .sidebar-wrap.collapsed .nav-badge {
+    position: absolute; top: 2px; right: 8px;
+    min-width: 14px; height: 14px; padding: 0;
+    font-size: 0.6rem; line-height: 14px;
+  }
 }
-.sidebar-brand-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 6px var(--green);
-  animation: pulse-dot 2s ease-in-out infinite;
-  flex-shrink: 0;
+
+/* Mobile — off-canvas drawer instead of a permanent icon rail. Hidden by
+   default; opened via the hamburger button in the content header. */
+@media (max-width: 768px) {
+  .sidebar-toggle { display: none; }
+  .sidebar-wrap {
+    position: fixed;
+    top: 0; left: 0;
+    width: 260px;
+    height: 100vh;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    /* Must outrank .sidebar-backdrop's z-index:90 — otherwise the
+       backdrop's dark scrim paints over the open drawer itself (on top
+       of its already-dark surface colour, hard to notice in a
+       screenshot but very visible live), not just the content behind
+       it, making the whole screen look dark instead of just dimming
+       what's behind the menu. */
+    z-index: 110;
+  }
+  .sidebar-wrap.collapsed { width: 260px; } /* collapse is a desktop-only concept */
+  .sidebar-wrap.mobile-open {
+    transform: translateX(0);
+    box-shadow: 8px 0 28px rgba(0,0,0,0.5);
+  }
+  .sidebar-backdrop { display: block; }
 }
-.sidebar-brand-dot.offline { background: var(--red); box-shadow: 0 0 6px var(--red); animation: none; }
 
 .sidebar-nav { flex: 1; padding: 8px 0; }
 
@@ -325,21 +408,60 @@ code, .mono { font-family: var(--mono); }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 24px;
+  gap: 12px;
+  height: var(--topbar-h);
+  padding: 0 24px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   flex-shrink: 0;
+}
+.content-header-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.content-header-titles { min-width: 0; }
+.content-header-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.mobile-menu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px; height: 32px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+.mobile-menu-btn:hover { color: var(--text); border-color: var(--border-2); }
+.mobile-menu-btn svg { width: 18px; height: 18px; }
+/* Hidden again at desktop/tablet width — kept physically right after the
+   base rule (rather than grouped with the other min-width:769px sidebar
+   rules) so cascade order can never re-hide-then-unhide it by accident;
+   see the two ordering bugs this exact pattern already caused above. */
+@media (min-width: 769px) {
+  .mobile-menu-btn { display: none; }
 }
 
 .content-title {
   font-size: 1rem;
   font-weight: 600;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .content-subtitle {
   font-size: 0.8rem;
   color: var(--text-muted);
   margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ws-badge {
@@ -348,6 +470,8 @@ code, .mono { font-family: var(--mono); }
   gap: 6px;
   font-size: 0.75rem;
   color: var(--text-muted);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .ws-dot {
   width: 7px; height: 7px;
@@ -360,8 +484,25 @@ code, .mono { font-family: var(--mono); }
 .content-scroll {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 24px;
+  /* A column flex container so a section that wants to fill the
+     available height (Ask Sentinel's .chat-layout) can do so with an
+     ordinary flex:1 instead of a viewport-minus-a-guessed-offset calc().
+     Every other section's root element has no flex-grow, so it still
+     sizes to its own content exactly as before — this changes nothing
+     for them. */
+  display: flex;
+  flex-direction: column;
 }
+/* A flex/grid item's default min-width is its content's own intrinsic
+   width, not 0 — so one wide child (a data table, a long mono value) can
+   silently force every section's root wrapper wider than the viewport,
+   which then gets clipped by .main-content's own overflow:hidden instead
+   of wrapping or scrolling the way it's supposed to. This is what was
+   actually behind the Incidents filter row and the Hardware info rows
+   looking cut off / overlapping on narrow screens. */
+.content-scroll > * { min-width: 0; }
 
 /* ── Cards ─────────────────────────────────────────── */
 .card {
@@ -571,15 +712,24 @@ code, .mono { font-family: var(--mono); }
 /* ── Info rows ─────────────────────────────────────── */
 .info-row {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  align-items: center;
+  align-items: baseline;
+  gap: 4px 12px;
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
   font-size: 0.875rem;
 }
 .info-row:last-child { border-bottom: none; }
-.info-key { color: var(--text-muted); }
-.info-val { font-family: var(--mono); color: var(--text); font-size: 0.82rem; }
+.info-key { color: var(--text-muted); flex-shrink: 0; }
+.info-val {
+  font-family: var(--mono);
+  color: var(--text);
+  font-size: 0.82rem;
+  text-align: right;
+  min-width: 0;
+  word-break: break-word;
+}
 
 /* ── Usage bars ────────────────────────────────────── */
 .usage-bar-wrap { margin: 8px 0; }
@@ -602,17 +752,32 @@ code, .mono { font-family: var(--mono); }
   transition: width 0.5s ease;
 }
 
-/* ── Recording control banner ──────────────────────── */
-.recording-banner {
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  padding: 10px 24px;
+/* ── Generic centered popup (name-a-session, etc.) ─── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 300;
   display: flex;
   align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-  flex-shrink: 0;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.15s ease;
 }
+.modal-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 22px;
+  box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+}
+.modal-title { font-size: 1rem; font-weight: 700; margin-bottom: 6px; }
+.modal-desc { font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 16px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+/* ── Recording controls (live in content-header-right) ─ */
 .recording-indicator {
   display: flex;
   align-items: center;
@@ -944,13 +1109,35 @@ code, .mono { font-family: var(--mono); }
   display: grid;
   grid-template-columns: 200px 1fr;
   gap: 16px;
-  /* Sized against the viewport rather than the parent: .content-scroll
-     is itself an overflow container, so a percentage height there
-     collapses. */
-  height: calc(100vh - 190px);
+  /* Fills whatever height .content-scroll actually has left, rather than
+     a viewport-minus-a-guessed-header-height calc() — the previous fixed
+     offset was tuned to a taller two-bar header that no longer exists
+     once the recording banner merged into content-header, which is
+     exactly what left a strip of dead space under the chat panel.
+     .content-scroll is a column flex container (see its own rule) so
+     this flex-based sizing reflects the *real* header height, including
+     any future change to it, instead of a number to keep in sync by hand. */
+  flex: 1;
   min-height: 400px;
 }
 .chat-sessions { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+
+/* Mobile-only chat history: a right-hand drawer, opened from a small
+   button living in the input dock (left of the message field) rather
+   than a floating button — opposite side from the sidebar's own
+   hamburger so the two are never confused for one another. The backdrop
+   base rule stays display:none outside the max-width:768px override
+   below — see the sidebar drawer's own comment for why an unconditional
+   rule elsewhere in the file must never appear *after* this one. */
+.chat-history-dock-btn { display: none; }
+.chat-history-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 120;
+  animation: fadeIn 0.15s ease;
+}
 .chat-session-list { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
 .chat-session {
   display: flex;
@@ -964,6 +1151,26 @@ code, .mono { font-family: var(--mono); }
 }
 .chat-session:hover { background: var(--surface-2); color: var(--text); }
 .chat-session.active { background: var(--surface-2); color: var(--accent); }
+.chat-session-running {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 5px var(--accent);
+  animation: pulse-dot 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+/* A different conversation is thinking while this one is on screen. */
+.chat-elsewhere-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+.chat-elsewhere-notice strong { color: var(--text); font-weight: 600; }
 .chat-session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-session .btn-icon { opacity: 0; }
 .chat-session:hover .btn-icon { opacity: 1; }
@@ -1029,8 +1236,8 @@ code, .mono { font-family: var(--mono); }
   text-align: left;
 }
 .chat-tool-head:hover { background: var(--surface-3); }
-.chat-tool-params { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-tool-caret { margin-left: auto; }
+.chat-tool-params { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.chat-tool-caret { margin-left: auto; flex-shrink: 0; }
 .chat-tool-out {
   margin: 0;
   padding: 10px;
@@ -1052,7 +1259,7 @@ code, .mono { font-family: var(--mono); }
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
 }
 .chat-suggest {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   border: 1px solid var(--yellow);
   border-radius: var(--r);
   padding: 10px 12px;
@@ -1103,14 +1310,29 @@ code, .mono { font-family: var(--mono); }
 /* ── Responsive ────────────────────────────────────── */
 @media (max-width: 768px) {
   .toast-host { left: 16px; max-width: none; }
+  .recording-stats { display: none; }
   .chat-layout { grid-template-columns: 1fr; }
-  .chat-sessions { display: none; }
+  .chat-history-dock-btn { display: inline-flex; }
+  .chat-sessions {
+    position: fixed;
+    top: 0; right: 0;
+    width: 280px;
+    max-width: 82vw;
+    height: 100vh;
+    padding: 16px 14px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    z-index: 130;
+    overflow-y: auto;
+  }
+  .chat-sessions.mobile-open {
+    transform: translateX(0);
+    box-shadow: -8px 0 28px rgba(0,0,0,0.5);
+  }
+  .chat-history-backdrop { display: block; }
   .tl-entry { grid-template-columns: 60px 18px 1fr; gap: 6px; }
-  .sidebar { width: 60px; min-width: 60px; }
-  .sidebar-brand-name,
-  .nav-item span,
-  .nav-section-label { display: none; }
-  .nav-item { justify-content: center; padding: 12px; }
   .content-scroll { padding: 16px; }
   .metrics-grid { grid-template-columns: 1fr 1fr; }
   .section-grid-2, .section-grid-3 { grid-template-columns: 1fr; }

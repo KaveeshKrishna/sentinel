@@ -17,6 +17,18 @@ const { listCredentials } = require('../settings/aiCredentials');
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
 
+/** Selectable AI-spend windows for the Sentinel Health page's dropdown. */
+const AI_WINDOWS = {
+  '24h': DAY_MS,
+  '7d': WEEK_MS,
+  '15d': 15 * DAY_MS,
+  '30d': 30 * DAY_MS
+};
+
+function resolveAiWindowMs(param) {
+  return AI_WINDOWS[param] || WEEK_MS; // unknown/missing -> the original default
+}
+
 /** Agent reachability + round-trip latency, via the same AgentClient every real call already uses. */
 async function checkAgent() {
   const startedAt = Date.now();
@@ -75,8 +87,8 @@ function toolExecutionsSummary() {
   };
 }
 
-function aiRunsSummary() {
-  const since = Date.now() - WEEK_MS;
+function aiRunsSummary(windowMs) {
+  const since = Date.now() - windowMs;
   const rows = getDb().prepare(
     'SELECT credential_id, purpose, prompt_tokens, completion_tokens, latency_ms, error FROM ai_runs WHERE created_at >= ?'
   ).all(since);
@@ -119,13 +131,14 @@ function aiRunsSummary() {
   return { byCredential, byPurpose };
 }
 
-router.get('/overview', async (_req, res) => {
+router.get('/overview', async (req, res) => {
+  const aiWindowMs = resolveAiWindowMs(req.query.aiWindow);
   const [agent, toolExecutions, aiRuns] = await Promise.all([
     checkAgent(),
     Promise.resolve(toolExecutionsSummary()),
-    Promise.resolve(aiRunsSummary())
+    Promise.resolve(aiRunsSummary(aiWindowMs))
   ]);
-  res.json({ agent, db: checkDb(), toolExecutions, aiRuns });
+  res.json({ agent, db: checkDb(), toolExecutions, aiRuns: { ...aiRuns, windowMs: aiWindowMs } });
 });
 
 module.exports = router;

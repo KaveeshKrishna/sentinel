@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import sentinelLogo from '../assets/logo/sentinel-logo-light.svg';
+import sentinelLogoText from '../assets/logo/sentinel-logo-text-light.svg';
 import RecordingControl from '../components/recording/RecordingControl';
 import ToastHost from '../components/shared/ToastHost';
 import Overview    from '../components/sections/Overview';
@@ -113,6 +114,23 @@ export default function Dashboard() {
   const location = useLocation();
   const openIncidents = useOpenIncidentCount();
 
+  // Desktop/tablet: collapsible to an icon rail, remembered across visits.
+  // Mobile: an off-canvas drawer instead — see the .sidebar-wrap media
+  // queries. Both live on the same element; only one behaviour is active
+  // at a given viewport width.
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('sentinel-sidebar-collapsed') === '1'; } catch { return false; }
+  });
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    try { localStorage.setItem('sentinel-sidebar-collapsed', collapsed ? '1' : '0'); } catch {}
+  }, [collapsed]);
+
+  // Close the mobile drawer on every navigation, including the one caused
+  // by clicking a nav link inside it.
+  useEffect(() => { setMobileOpen(false); }, [location.pathname]);
+
   const activeTab = location.pathname.split('/')[1] || 'overview';
   const info = TAB_TITLES[activeTab] || TAB_TITLES.overview;
 
@@ -124,68 +142,102 @@ export default function Dashboard() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <img src={sentinelLogo} alt="" width="20" height="20" className="sidebar-brand-logo" />
-          <span className="sidebar-brand-name">Sentinel</span>
-          <div className={`sidebar-brand-dot ${connected ? '' : 'offline'}`} style={{ marginLeft: 'auto' }} />
-        </div>
+      {mobileOpen && <div className="sidebar-backdrop" onClick={() => setMobileOpen(false)} />}
 
-        <nav className="sidebar-nav">
-          {GROUPS.map(group => (
-            <div key={group}>
-              <div className="nav-section-label" style={group !== GROUPS[0] ? { marginTop: 8 } : undefined}>{group}</div>
-              {TABS.filter(t => t.group === group).map(tab => (
-                <NavLink
-                  key={tab.id}
-                  id={`nav-${tab.id}`}
-                  to={`/${tab.id}`}
-                  className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-                >
-                  <NavIcon name={tab.icon} />
-                  <span>{tab.label}</span>
-                  {tab.id === 'incidents' && openIncidents > 0 && (
-                    <span className="nav-badge" id="nav-incidents-count">{openIncidents}</span>
-                  )}
-                </NavLink>
-              ))}
-            </div>
-          ))}
-        </nav>
+      <div className={`sidebar-wrap ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
+        <aside className="sidebar">
+          <div className="sidebar-brand">
+            <img src={sentinelLogo} alt="" className="sidebar-brand-icon" />
+            <img src={sentinelLogoText} alt="Sentinel" className="sidebar-brand-full" />
+          </div>
 
-        <div className="sidebar-footer">
-          <button
-            id="btn-logout"
-            className="nav-item"
-            onClick={handleLogout}
-            style={{ color: 'var(--text-dim)', width: '100%', borderRadius: 'var(--r)' }}
-          >
-            <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-              <polyline points="16 17 21 12 16 7"/>
-              <line x1="21" y1="12" x2="9" y2="12"/>
-            </svg>
-            <span>Logout</span>
-          </button>
-        </div>
-      </aside>
+          <nav className="sidebar-nav">
+            {GROUPS.map(group => (
+              <div key={group}>
+                <div className="nav-section-label" style={group !== GROUPS[0] ? { marginTop: 8 } : undefined}>{group}</div>
+                {TABS.filter(t => t.group === group).map(tab => (
+                  <NavLink
+                    key={tab.id}
+                    id={`nav-${tab.id}`}
+                    to={`/${tab.id}`}
+                    title={collapsed ? tab.label : undefined}
+                    className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+                  >
+                    <NavIcon name={tab.icon} />
+                    <span className="nav-label">{tab.label}</span>
+                    {tab.id === 'incidents' && openIncidents > 0 && (
+                      <span className="nav-badge" id="nav-incidents-count">{openIncidents}</span>
+                    )}
+                  </NavLink>
+                ))}
+              </div>
+            ))}
+          </nav>
+
+          <div className="sidebar-footer">
+            <button
+              id="btn-logout"
+              className="nav-item"
+              title={collapsed ? 'Logout' : undefined}
+              onClick={handleLogout}
+              style={{ color: 'var(--text-dim)', width: '100%', borderRadius: 'var(--r)' }}
+            >
+              <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+              <span className="nav-label">Logout</span>
+            </button>
+          </div>
+        </aside>
+
+        <button
+          id="btn-sidebar-collapse"
+          className="sidebar-toggle"
+          onClick={() => setCollapsed(c => !c)}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+        </button>
+      </div>
 
       <div className="main-content">
         {/* Live incident toasts (fixed overlay, renders nothing when idle) */}
         <ToastHost />
 
-        {/* Recording banner (always visible) */}
-        <RecordingControl />
-
-        {/* Section header */}
+        {/* Section header — title on the left; connection status and
+            recording controls together on the right, in that order, so
+            the live indicator always sits immediately left of whichever
+            recording button is showing. */}
         <div className="content-header">
-          <div>
-            <div className="content-title">{info.title}</div>
-            <div className="content-subtitle">{info.subtitle}</div>
+          <div className="content-header-left">
+            <button
+              id="btn-mobile-menu"
+              className="mobile-menu-btn"
+              onClick={() => setMobileOpen(true)}
+              aria-label="Open menu"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            </button>
+            <div className="content-header-titles">
+              <div className="content-title">{info.title}</div>
+              <div className="content-subtitle">{info.subtitle}</div>
+            </div>
           </div>
-          <div className="ws-badge">
-            <div className={`ws-dot ${connected ? '' : 'off'}`} />
-            {connected ? 'Live' : 'Reconnecting…'}
+          <div className="content-header-right">
+            <div className="ws-badge">
+              <div className={`ws-dot ${connected ? '' : 'off'}`} />
+              {connected ? 'Live' : 'Reconnecting…'}
+            </div>
+            <RecordingControl />
           </div>
         </div>
 

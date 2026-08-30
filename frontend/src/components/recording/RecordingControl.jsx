@@ -11,9 +11,10 @@ function fmt(ms) {
 
 export default function RecordingControl() {
   const [state, setState]     = useState(null); // recording engine state
-  const [name, setName]       = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [naming, setNaming]   = useState(false); // name-prompt popup open?
+  const [pendingName, setPendingName] = useState('');
   const tickRef = useRef(null);
 
   async function fetchState() {
@@ -42,12 +43,13 @@ export default function RecordingControl() {
     return () => clearInterval(tickRef.current);
   }, [state?.recording, state?.startTime]);
 
-  async function start() {
+  async function start(sessionName) {
     setLoading(true);
     try {
-      const d = await api.post('/recordings/start', { name: name.trim() || undefined });
+      const d = await api.post('/recordings/start', { name: sessionName?.trim() || undefined });
       setState(d);
-      setName('');
+      setNaming(false);
+      setPendingName('');
     } catch (err) {
       alert(err.message);
     } finally {
@@ -70,7 +72,7 @@ export default function RecordingControl() {
   if (!state) return null;
 
   return (
-    <div className="recording-banner">
+    <>
       {state.recording ? (
         <>
           <div className="recording-indicator">
@@ -87,40 +89,55 @@ export default function RecordingControl() {
             className="btn btn-danger btn-sm"
             onClick={stop}
             disabled={loading}
-            style={{ marginLeft: 'auto' }}
           >
             {loading ? '…' : <><Icon name="square" size={12} /> Stop Recording</>}
           </button>
         </>
       ) : (
-        <>
-          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 500 }}>
-            Recording Mode
-          </span>
-          <input
-            id="input-session-name"
-            className="form-input"
-            style={{ width: 200, padding: '4px 10px', fontSize: '0.8rem' }}
-            placeholder="Session name (optional)"
-            value={name}
-            onChange={e => setName(e.target.value)}
-          />
-          <button
-            id="btn-start-recording"
-            className="btn btn-sm"
-            style={{ background: 'var(--red)', color: '#fff', border: 'none' }}
-            onClick={start}
-            disabled={loading}
-          >
-            {loading ? '…' : <><Icon name="circle" size={12} /> Start Recording</>}
-          </button>
-          {state.sessionId && (
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)', marginLeft: 8 }}>
-              Last session #{state.sessionId}
-            </span>
-          )}
-        </>
+        <button
+          id="btn-start-recording"
+          className="btn btn-sm"
+          style={{ background: 'var(--red)', color: '#fff', border: 'none' }}
+          onClick={() => setNaming(true)}
+          disabled={loading}
+        >
+          {loading ? '…' : <><Icon name="circle" size={12} /> Start Recording</>}
+        </button>
       )}
-    </div>
+
+      {naming && (
+        <div className="modal-overlay" onClick={() => setNaming(false)}>
+          <div className="modal-card" onClick={e => e.stopPropagation()}>
+            <div className="modal-title">Start Recording</div>
+            <p className="modal-desc">
+              Give this session a name so it's easy to find later, or leave it blank.
+            </p>
+            <input
+              id="input-session-name"
+              className="form-input"
+              autoFocus
+              placeholder="Session name (optional)"
+              value={pendingName}
+              onChange={e => setPendingName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') start(pendingName); }}
+            />
+            <div className="modal-actions">
+              <button className="btn btn-secondary btn-sm" onClick={() => setNaming(false)} disabled={loading}>
+                Cancel
+              </button>
+              <button
+                id="btn-confirm-start-recording"
+                className="btn btn-sm"
+                style={{ background: 'var(--red)', color: '#fff', border: 'none' }}
+                onClick={() => start(pendingName)}
+                disabled={loading}
+              >
+                {loading ? '…' : <><Icon name="circle" size={12} /> Start Recording</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

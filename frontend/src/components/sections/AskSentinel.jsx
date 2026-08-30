@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../../api/client';
 import Icon from '../shared/Icon';
+import { useLiveEvents } from '../../hooks/useWebSocket';
 
 const SUGGESTIONS = [
   'Why is CPU high right now?',
@@ -81,18 +82,64 @@ export default function AskSentinel() {
   const [sessionId, setSessionId] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [escalating, setEscalating] = useState(false);
+  // Chat history is a permanent left column on desktop but hidden on
+  // phone width (see .chat-sessions media rules) — this opens it as a
+  // second, right-hand drawer instead, alongside the sidebar's own
+  // hamburger, rather than losing access to past conversations entirely.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  // Sessions with a turn currently running server-side — not just this
+  // one. A turn now outlives its own stream (ai/chatRuns.js), so this is
+  // what lets a reopened conversation, or a *different* one the operator
+  // switches to while another is still thinking, show that honestly
+  // instead of looking finished or idle.
+  const [runningSessions, setRunningSessions] = useState(() => new Set());
   const endRef = useRef(null);
   // The session whose turn is currently streaming. Held in a ref because
   // Stop must target the right conversation even after the operator has
   // clicked into a different one.
   const runningSessionRef = useRef(null);
   const navigate = useNavigate();
+  const { lastChat, chatTick } = useLiveEvents();
 
   const loadSessions = useCallback(() => {
     api.get('/chat/sessions').then(setSessions).catch(() => {});
   }, []);
 
+  const loadRunning = useCallback(() => {
+    api.get('/chat/running')
+      .then(({ running }) => setRunningSessions(new Set(running.map(r => r.sessionId))))
+      .catch(() => {});
+  }, []);
+
   useEffect(() => { loadSessions(); }, [loadSessions]);
+
+  // Poll for what's running elsewhere (another tab, or a turn this
+  // component instance didn't itself start) — the WS 'chat' event below
+  // covers the *finish* of a turn but nothing announces a start.
+  useEffect(() => {
+    loadRunning();
+    const t = setInterval(loadRunning, 4000);
+    return () => clearInterval(t);
+  }, [loadRunning]);
+
+  // A turn finished — announced whether or not anyone is watching it.
+  // Drop it from the running set, refresh the session list (title/order),
+  // and if it's the conversation currently open, pull in the real answer
+  // in place of the placeholder openSession() shows for a running turn.
+  const seenChatTick = useRef(0);
+  useEffect(() => {
+    if (!lastChat || chatTick === seenChatTick.current) return;
+    seenChatTick.current = chatTick;
+    setRunningSessions(prev => {
+      if (!prev.has(lastChat.sessionId)) return prev;
+      const next = new Set(prev);
+      next.delete(lastChat.sessionId);
+      return next;
+    });
+    loadSessions();
+    if (lastChat.sessionId === sessionId) openSession(sessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastChat, chatTick]);
 
   // Deep link from the "answer landed" toast — a turn finishes even when
   // the operator has navigated away, so the notification has to be able
@@ -108,15 +155,26 @@ export default function AskSentinel() {
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [turns]);
 
   async function openSession(id) {
+    setHistoryOpen(false);
     try {
       const s = await api.get(`/chat/sessions/${id}`);
       setSessionId(s.id);
-      setTurns(s.messages.map(m => ({
+      const mapped = s.messages.map(m => ({
         role: m.role,
         content: m.content,
         calls: m.toolCalls?.calls || null,
         suggestedIncident: m.toolCalls?.suggestedIncident || null
-      })));
+      }));
+      // A running turn's user message is persisted immediately, before
+      // its reply — so a still-thinking conversation naturally ends on a
+      // user turn with nothing after it. Show that honestly (a pending
+      // bubble, Stop instead of Ask) rather than a conversation that
+      // looks like it's just waiting on the operator.
+      if (mapped.length > 0 && mapped[mapped.length - 1].role === 'user' && runningSessions.has(id)) {
+        mapped.push({ role: 'assistant', pending: true, calls: [], refusals: [] });
+        runningSessionRef.current = id;
+      }
+      setTurns(mapped);
     } catch (err) {
       alert(err.message);
     }
@@ -126,6 +184,7 @@ export default function AskSentinel() {
     setSessionId(null);
     setTurns([]);
     setInput('');
+    setHistoryOpen(false);
   }
 
   async function removeSession(e, id) {
@@ -205,6 +264,12 @@ export default function AskSentinel() {
       patchLast(t => ({ ...t, pending: false, error: err.message }));
     } finally {
       setBusy(false);
+      setRunningSessions(prev => {
+        if (!runningSessionRef.current || !prev.has(runningSessionRef.current)) return prev;
+        const next = new Set(prev);
+        next.delete(runningSessionRef.current);
+        return next;
+      });
       runningSessionRef.current = null;
       loadSessions();
     }
@@ -215,6 +280,12 @@ export default function AskSentinel() {
       case 'session':
         setSessionId(ev.sessionId);
         runningSessionRef.current = ev.sessionId;
+        setRunningSessions(prev => new Set(prev).add(ev.sessionId));
+        // So the new conversation appears in history immediately, not
+        // only once it has an answer — the row exists server-side (and
+        // already carries the operator's own question) the moment this
+        // event arrives.
+        loadSessions();
         break;
       case 'stopped':
         patchLast(t => ({
@@ -270,9 +341,17 @@ export default function AskSentinel() {
     }
   }
 
+  // Whether the conversation on screen right now is thinking — either
+  // this component instance started that turn (busy), or it's running
+  // elsewhere and the operator has switched to look at it.
+  const isCurrentBusy = busy || (sessionId != null && runningSessions.has(sessionId));
+  const otherRunning = [...runningSessions].filter(id => id !== sessionId);
+
   return (
     <div className="chat-layout">
-      <div className="chat-sessions">
+      {historyOpen && <div className="chat-history-backdrop" onClick={() => setHistoryOpen(false)} />}
+
+      <div className={`chat-sessions ${historyOpen ? 'mobile-open' : ''}`}>
         <button className="btn btn-secondary btn-sm btn-full" id="btn-new-chat" onClick={newSession}>+ New chat</button>
         <div className="chat-session-list">
           {sessions.map(s => (
@@ -282,6 +361,9 @@ export default function AskSentinel() {
               onClick={() => openSession(s.id)}
             >
               <span className="chat-session-title">{s.title}</span>
+              {runningSessions.has(s.id) && (
+                <span className="chat-session-running" title="Still thinking" />
+              )}
               <button className="btn-icon" onClick={(e) => removeSession(e, s.id)} title="Delete"><Icon name="x" size={12} /></button>
             </div>
           ))}
@@ -311,19 +393,43 @@ export default function AskSentinel() {
           <div ref={endRef} />
         </div>
 
+        {otherRunning.length > 0 && (
+          <div className="chat-elsewhere-notice">
+            <Icon name="clock" size={13} />
+            {otherRunning.length === 1
+              ? <><strong>{sessions.find(s => s.id === otherRunning[0])?.title || 'Another conversation'}</strong> is still thinking…</>
+              : <>{otherRunning.length} other conversations are still thinking…</>}
+          </div>
+        )}
+
         <form
           className="chat-input-row"
           onSubmit={(e) => { e.preventDefault(); send(); }}
         >
+          {/* Mobile-only: .chat-sessions is a hidden drawer at this
+              width (see the max-width:768px rules), so this is the only
+              way in to past conversations — a second, smaller
+              "hamburger" next to the sidebar's own, opening chat
+              history instead of navigation. */}
+          <button
+            id="btn-chat-history"
+            type="button"
+            className="btn btn-secondary btn-icon chat-history-dock-btn"
+            onClick={() => setHistoryOpen(true)}
+            aria-label="Chat history"
+            title="Chat history"
+          >
+            <Icon name="clock" size={16} />
+          </button>
           <input
             id="chat-input"
             className="form-input"
-            placeholder={busy ? "Thinking — you can leave this page, the answer will be saved…" : "Ask about CPU, containers, services, logs…"}
+            placeholder={isCurrentBusy ? "Thinking — you can leave this page, the answer will be saved…" : "Ask about CPU, containers, services, logs…"}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            disabled={busy}
+            disabled={isCurrentBusy}
           />
-          {busy ? (
+          {isCurrentBusy ? (
             // The turn continues server-side whether or not this page is
             // open, so stopping has to be a deliberate act rather than a
             // side effect of navigating away.
