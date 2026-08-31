@@ -57,3 +57,6 @@ coverage/
 .cache/
 .vite/
 .eslintcache
+
+# ── Hackathon submission (deck, report, scripts — not part of the product) ──
+hackathon_submission/

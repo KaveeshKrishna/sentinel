@@ -36,7 +36,7 @@ export default function Login() {
           <div className="login-logo">
             <img src={sentinelLogoText} alt="Sentinel" className="login-logo-img" />
           </div>
-          <div className="login-subtitle">VPS Operations Dashboard</div>
+          <div className="login-subtitle">Your AI Infrastructure Engineer</div>
           {DemoBadge && <Suspense fallback={null}><DemoBadge /></Suspense>}
         </div>
 
