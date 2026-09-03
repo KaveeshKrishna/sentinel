@@ -83,18 +83,22 @@ export default function SessionReport({ sessionId, onBack, onDeleted }) {
         <button id="btn-back-sessions" className="btn btn-secondary btn-sm" onClick={onBack}><Icon name="chevron-left" size={12} /> Back</button>
         <div style={{ fontSize: '1rem', fontWeight: 600 }}>{session.name}</div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <a
-            id="btn-export-csv"
-            href={`/api/recordings/${sessionId}/export/csv`}
-            className="btn btn-secondary btn-sm"
-            download
-          ><Icon name="arrow-down" size={12} /> CSV</a>
-          <a
-            id="btn-export-json"
-            href={`/api/recordings/${sessionId}/export/json`}
-            className="btn btn-secondary btn-sm"
-            download
-          ><Icon name="arrow-down" size={12} /> JSON</a>
+          {!import.meta.env.VITE_DEMO && (
+            <>
+              <a
+                id="btn-export-csv"
+                href={`/api/recordings/${sessionId}/export/csv`}
+                className="btn btn-secondary btn-sm"
+                download
+              ><Icon name="arrow-down" size={12} /> CSV</a>
+              <a
+                id="btn-export-json"
+                href={`/api/recordings/${sessionId}/export/json`}
+                className="btn btn-secondary btn-sm"
+                download
+              ><Icon name="arrow-down" size={12} /> JSON</a>
+            </>
+          )}
           <button
             id="btn-delete-session-detail"
             className="btn btn-danger btn-sm"

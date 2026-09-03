@@ -2,9 +2,8 @@
 
 A self-contained two-container stack (`demo-api` depends on `demo-db`) for
 rehearsing Sentinel's full OBSERVE → DIAGNOSE → PLAN → ACT → VERIFY loop
-without ever touching this host's real `app-*`/`other-*`
-services. See ARCHITECTURE.md's Demo scenario / Development Notes for why this
-exists.
+without touching any of your other production services. Its distinct
+compose project name and internal-only network keep it isolated.
 
 ## 1. Bring the stack up
 

@@ -1,7 +1,6 @@
 # Self-contained demo stack for rehearsing Sentinel's incident-detection
 # loop. Distinct project name and an internal-only network so this can
-# never collide with, or be confused for, this host's real app-*/
-# other-* services — see ARCHITECTURE.md's Development Notes.
+# never collide with, or be confused for, your other production services.
 #
 # Usage: docker compose -p sentinel-demo -f examples/demo-stack/compose.yml up -d
 

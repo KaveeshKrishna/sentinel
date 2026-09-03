@@ -1,0 +1,12 @@
+# Static hosting for the demo build. Replace DEMO_DOMAIN and the path,
+# append to your Caddyfile, then reload Caddy.
+#
+# The demo is a static SPA with no backend, so this only needs file
+# serving + an SPA fallback — no reverse_proxy.
+
+http://DEMO_DOMAIN {
+    root * /path/to/sentinel/sentinel-demo/dist
+    encode gzip
+    try_files {path} /index.html
+    file_server
+}

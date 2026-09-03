@@ -2,7 +2,7 @@
   "name": "demo-api",
   "version": "1.0.0",
   "private": true,
-  "description": "Minimal demo app for Sentinel's incident-detection rehearsal — never touches app-*/other-*.",
+  "description": "Minimal demo app for Sentinel's incident-detection rehearsal — never touches your other production containers.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"

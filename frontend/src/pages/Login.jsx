@@ -1,6 +1,11 @@
-import { useState } from 'react';
+import { useState, lazy, Suspense } from 'react';
 import { useAuth, apiLogin } from '../hooks/useAuth';
 import sentinelLogoText from '../assets/logo/sentinel-logo-text-light.svg';
+
+const DEMO = !!import.meta.env.VITE_DEMO;
+const DemoBadge = DEMO
+  ? lazy(() => import('../demo/DemoNotice.jsx').then(m => ({ default: m.DemoBadge })))
+  : null;
 
 export default function Login() {
   const { setAuth } = useAuth();
@@ -32,6 +37,7 @@ export default function Login() {
             <img src={sentinelLogoText} alt="Sentinel" className="login-logo-img" />
           </div>
           <div className="login-subtitle">VPS Operations Dashboard</div>
+          {DemoBadge && <Suspense fallback={null}><DemoBadge /></Suspense>}
         </div>
 
         {error && <div className="error-msg">{error}</div>}
@@ -72,6 +78,23 @@ export default function Login() {
           >
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
+
+          {DEMO && (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary btn-full"
+                style={{ marginTop: 8 }}
+                disabled={loading}
+                onClick={() => { setUsername('demo'); setPassword('demo'); }}
+              >
+                Fill demo credentials
+              </button>
+              <div style={{ marginTop: 8, textAlign: 'center', fontSize: '0.72rem', color: 'var(--text-dim)' }}>
+                Demo login — user <code>demo</code>, password <code>demo</code>
+              </div>
+            </>
+          )}
         </form>
 
         <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)', textAlign: 'center' }}>
