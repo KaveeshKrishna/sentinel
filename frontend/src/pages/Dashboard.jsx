@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import sentinelLogo from '../assets/logo/sentinel-logo-light.svg';
 import sentinelLogoText from '../assets/logo/sentinel-logo-text-light.svg';
@@ -19,7 +19,14 @@ import AskSentinel from '../components/sections/AskSentinel';
 import IncidentDetail from '../components/sections/IncidentDetail';
 import Settings    from '../components/sections/Settings';
 import Health      from '../components/sections/Health';
+import About       from '../components/sections/About';
 import { useAuth, apiLogout } from '../hooks/useAuth';
+
+// Demo-only badge + notice. Dynamically imported behind the build flag so
+// nothing under src/demo/ lands in the normal bundle.
+const DemoBadge = import.meta.env.VITE_DEMO
+  ? lazy(() => import('../demo/DemoNotice.jsx').then(m => ({ default: m.DemoBadge })))
+  : null;
 import { useMetrics, useLiveEvents } from '../hooks/useWebSocket';
 import { api } from '../api/client';
 
@@ -50,7 +57,7 @@ function useOpenIncidentCount() {
 const TABS = [
   { id: 'overview',     label: 'Overview',     icon: 'grid',        group: 'Monitor' },
   { id: 'incidents',    label: 'Incidents',    icon: 'alert',       group: 'Monitor' },
-  { id: 'ask',          label: 'Ask Sentinel',  icon: 'message',    group: 'Monitor' },
+  { id: 'ask',          label: 'Ask Sentinel',  icon: 'sparkles',   group: 'Monitor' },
   { id: 'hardware',     label: 'Hardware',      icon: 'cpu',        group: 'Monitor' },
   { id: 'docker',       label: 'Docker',        icon: 'box',        group: 'Monitor' },
   { id: 'websites',     label: 'Websites',      icon: 'globe',      group: 'Monitor' },
@@ -61,7 +68,8 @@ const TABS = [
   { id: 'activity',     label: 'Activity',      icon: 'clock',      group: 'Manage' },
   { id: 'recordings',   label: 'Recordings',    icon: 'record',     group: 'Manage' },
   { id: 'sentinel-health', label: 'Sentinel Health', icon: 'pulse', group: 'Manage' },
-  { id: 'settings',     label: 'Settings',      icon: 'settings',   group: 'Manage' }
+  { id: 'settings',     label: 'Settings',      icon: 'settings',   group: 'Manage' },
+  { id: 'about',        label: 'About',         icon: 'shield',     group: 'Manage' }
 ];
 
 const TAB_TITLES = {
@@ -78,7 +86,8 @@ const TAB_TITLES = {
   activity:    { title: 'Activity Timeline',  subtitle: 'Most recent 50 system events' },
   recordings:  { title: 'Recordings',         subtitle: 'VPS health recording sessions' },
   'sentinel-health': { title: 'Sentinel Health', subtitle: 'Agent/database status and AI request spend' },
-  settings:    { title: 'Settings',           subtitle: 'AI providers, detection thresholds and alerting' }
+  settings:    { title: 'Settings',           subtitle: 'AI providers, detection thresholds and alerting' },
+  about:       { title: 'About Sentinel',     subtitle: 'What it is, why it was built, and who by' }
 };
 
 const GROUPS = ['Monitor', 'Manage'];
@@ -98,7 +107,8 @@ function NavIcon({ name }) {
     message:<><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></>,
     alert:<><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
     settings:<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></>,
-    pulse:<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+    pulse:<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>,
+    sparkles:<><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><path d="M19 14l.9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14z"/></>
   };
   return (
     <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -161,7 +171,7 @@ export default function Dashboard() {
                     id={`nav-${tab.id}`}
                     to={`/${tab.id}`}
                     title={collapsed ? tab.label : undefined}
-                    className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+                    className={({ isActive }) => `nav-item ${isActive ? 'active' : ''} ${tab.id === 'ask' ? 'nav-item-ai' : ''}`}
                   >
                     <NavIcon name={tab.icon} />
                     <span className="nav-label">{tab.label}</span>
@@ -233,6 +243,7 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="content-header-right">
+            {DemoBadge && <Suspense fallback={null}><DemoBadge compact autoOpen /></Suspense>}
             <div className="ws-badge">
               <div className={`ws-dot ${connected ? '' : 'off'}`} />
               {connected ? 'Live' : 'Reconnecting…'}
@@ -259,6 +270,7 @@ export default function Dashboard() {
             <Route path="recordings" element={<Recordings />} />
             <Route path="sentinel-health" element={<Health />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="about" element={<About />} />
             <Route path="*" element={<Navigate to="overview" replace />} />
           </Routes>
         </div>
