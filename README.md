@@ -93,14 +93,6 @@ and `server/` directly with `node`, pointing both at the same
 not running as root / don't have Docker installed — expected outside a
 real install.
 
-### Legacy Docker Compose path (non-functional, kept for reference only)
-
-The original single-container deployment (`compose.yml`/`Dockerfile`)
-predates the agent/server split and no longer works — `server/` now
-requires a running `agent/` that compose doesn't start. The migration
-off it is complete; these files are kept only as a historical reference
-and will be removed. Use `install.sh`.
-
 ---
 
 ## Architecture
@@ -231,7 +223,17 @@ sentinel/
 ├── packaging/systemd/          # sentinel-agent.service, sentinel-server.service
 ├── install.sh                  # the installer (see Quick Start above)
 ├── examples/Caddyfile.example
-├── compose.yml                 # legacy — see Quick Start note above
-├── Dockerfile                  # legacy — see Quick Start note above
+├── sentinel-demo/              # the public, fully-fabricated demo build
 └── .env.example
 ```
+
+---
+
+## License
+
+Sentinel is **source-available for noncommercial use** under the
+[PolyForm Noncommercial License 1.0.0](./LICENSE). You may run, study,
+modify and share it for personal projects, research, education, and other
+noncommercial purposes. Commercial use requires a separate license from
+the author — contact details are on the About page and in
+`frontend/src/components/sections/About.jsx`.
