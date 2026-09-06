@@ -3,6 +3,14 @@
 .env.*
 !.env.example
 
+# ── Local AI-assistant / editor context (never publish) ──
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.cursor/
+.aider*
+*.plan.md
+
 # ── Node modules ──────────────────────────────────
 node_modules/
 server/node_modules/
@@ -13,6 +21,7 @@ cli/node_modules/
 # ── Build outputs ─────────────────────────────────
 frontend/dist/
 server/public/
+sentinel-demo/dist/
 
 # ── Runtime data ──────────────────────────────────
 server/data/
@@ -48,3 +57,6 @@ coverage/
 .cache/
 .vite/
 .eslintcache
+
+# ── Hackathon submission (deck, report, scripts — not part of the product) ──
+hackathon_submission/
