@@ -38,3 +38,12 @@ and especially valuable.
 
 Only the latest released version is supported with security fixes while the
 project is pre-1.0.
+
+## Repository history
+
+The Git history was rewritten before Sentinel was open sourced. Local
+environment files, a real server hostname, a LAN IP, and internal notes were
+removed from the early commits, and references to the author's own machine
+were replaced with placeholders. Commit hashes from before the public release
+will not match anything seen earlier; the commit dates and messages still
+reflect the real development timeline.

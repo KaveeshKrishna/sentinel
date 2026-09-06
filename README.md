@@ -3,6 +3,18 @@
 > Self-hosted, AI-assisted infrastructure engineering platform —
 > password-protected, real-time, installable on your own server.
 
+## A note on this repository's history
+
+The Git history here was rewritten once, right before Sentinel was made
+public. The early commits carried a local `.env`, a real server hostname, a
+LAN IP, and internal working notes that were never meant to be published.
+Those were stripped from every commit, and a few references to the author's
+own machine were replaced with placeholders.
+
+The commit dates and messages are the real ones. The order the work happened
+in, and what each change did, is unchanged. Only the private pieces were
+taken out.
+
 Sentinel monitors your VPS and runs a full
 **OBSERVE → DIAGNOSE → PLAN → ACT → VERIFY** loop: it detects incidents,
 gathers evidence, asks an AI provider of your choice for a root cause and
