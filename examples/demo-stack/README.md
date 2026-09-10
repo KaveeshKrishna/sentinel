@@ -1,6 +1,6 @@
 # Demo stack, for rehearsing an incident
 
-A small two-container stack (`demo-api` depends on `demo-db`) you can use to run through Sentinel's whole OBSERVE → DIAGNOSE → PLAN → ACT → VERIFY loop without touching any of your other real services. It runs under its own compose project name and its own network, so it stays isolated.
+A small two-container stack (`demo-api` depends on `demo-db`) you can use to run all the way through Sentinel's detect, diagnose, fix and verify flow without touching any of your other real services. It runs under its own compose project name and its own network so it stays isolated.
 
 ## 1. Bring it up
 
@@ -42,7 +42,7 @@ Within about 10 seconds (two 5-second detector polls), `demo-api`'s Docker healt
 curl http://localhost:<sentinel-port>/api/incidents
 ```
 
-You should see it go `DETECTED` → `INVESTIGATING` (gathering evidence, logs showing the DB connection timing out, checking if there was a recent deploy) → `DIAGNOSED` (a cause plus a `restart_container` suggestion) → `AWAITING_APPROVAL`. Approve it:
+You should see it go from `DETECTED` to `INVESTIGATING` (it's gathering evidence here, logs showing the DB connection timing out, checking if there was a recent deploy), then `DIAGNOSED` (a cause plus a `restart_container` suggestion), then `AWAITING_APPROVAL`. Approve it:
 
 ```bash
 curl -X POST http://localhost:<sentinel-port>/api/incidents/<id>/approve \
@@ -50,7 +50,7 @@ curl -X POST http://localhost:<sentinel-port>/api/incidents/<id>/approve \
   -d '{"actionId": <action-id-from-the-incident-detail>}'
 ```
 
-It'll move to `REMEDIATING` → `VERIFYING` → `RESOLVED` once `demo-db` is actually back up and confirmed healthy.
+It'll move to `REMEDIATING`, then `VERIFYING`, then `RESOLVED` once `demo-db` is actually back up and confirmed healthy.
 
 ## 4. Try the failure path too
 

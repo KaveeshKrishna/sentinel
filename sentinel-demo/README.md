@@ -10,11 +10,11 @@ That flag pulls in [`frontend/src/demo/`](../frontend/src/demo/), which swaps ou
 - the `/ws` stream is driven by a little simulator that randomly walks CPU, RAM, temp, load, and network numbers so the dashboard looks alive
 - Ask Sentinel, approving incidents, deploys, and AI-provider errors are all scripted ahead of time
 
-**There's no backend at all.** The whole thing is just static HTML/JS/CSS. It can't read or touch anything on whatever machine it happens to be hosted on, so it's safe to put anywhere.
+There's no backend at all. The whole thing is just static HTML, JS and CSS. It can't read or touch anything on whatever machine it's hosted on, so it's safe to put anywhere.
 
 Anything you do on it (stopping a service, approving an incident, changing settings) gets saved in that browser's `localStorage` only. There's a Reset demo button in the notice popup if you want to start over.
 
-Login is **user `demo`, password `demo`** (there's also a "Fill demo credentials" button right on the login page).
+Login is user `demo`, password `demo`. There's also a "Fill demo credentials" button right on the login page.
 
 ## Building it
 

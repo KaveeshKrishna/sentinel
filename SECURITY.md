@@ -18,10 +18,7 @@ I'll try to acknowledge reports within 72 hours.
 
 ## What's in scope
 
-Sentinel is split into two halves with different levels of trust:
-
-- **`sentinel-server`**, unprivileged. Runs the web UI, the API, the AI stuff, and the incident engine. Has no direct access to the host.
-- **`sentinel-agent`**, privileged, runs as root. Exposes a fixed, schema-checked list of tools over a local socket. There's no generic "run a command" endpoint anywhere.
+Sentinel is split into two halves with different levels of trust. `sentinel-server` is unprivileged, it runs the web UI, the API, the AI stuff and the incident engine, and it has no direct access to the host. `sentinel-agent` is privileged and runs as root, and it exposes a fixed, schema-checked list of tools over a local socket, with no generic "run a command" endpoint anywhere.
 
 Reports about getting from the server into the agent, bypassing the tool registry's checks, breaking auth or session handling, or getting the AI to call a tool outside its declared risk level, all of that is exactly the kind of thing I want to hear about.
 

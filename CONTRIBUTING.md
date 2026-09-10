@@ -4,22 +4,15 @@ Thanks for wanting to help out with this.
 
 ## Setting things up
 
-The project's split into three main pieces:
+There's a `server/` (the unprivileged half, so the API, the web backend, the AI stuff), an `agent/` (the privileged one, the only process with root, systemctl and Docker access), a `frontend/` (the React UI, built and served by `server/`), and `cli/` (the `sentinel` command).
 
-```
-server/     the unprivileged half, API, web backend, AI stuff
-agent/      the privileged one, the only process with root/systemctl/Docker access
-frontend/   the React UI, built and served by server/
-cli/        the `sentinel` command
-```
-
-Read `ARCHITECTURE.md` first if you're planning a bigger change, it covers how things are laid out and why, so you're not fighting the design.
+Read ARCHITECTURE.md first if you're planning a bigger change. It covers how things are laid out and why, so you're not fighting the design.
 
 ## Rules I actually care about
 
-- **Never give the server or the AI a way to run a raw shell command.** Every privileged thing goes through the agent's tool list, a fixed set of named tools, each with a schema and a risk level. If you need a new capability, add a new tool with its own honest risk level instead of loosening one that already exists.
-- Use `execFile`/`spawn` with an argv array, not a shell string, anywhere you spawn a process.
-- Don't hardcode anything specific to one machine, domains, IPs, file paths. This has to work on a fresh VPS with none of my own setup baked in.
+- Never give the server or the AI a way to run a raw shell command. Every privileged thing goes through the agent's tool list, which is a fixed set of named tools, each with a schema and a risk level. If you need a new capability, add a new tool with an honest risk level instead of loosening one that already exists.
+- Use `execFile` or `spawn` with an argv array, not a shell string, anywhere you spawn a process.
+- Don't hardcode anything specific to one machine, so no domains, IPs or fixed paths. This has to work on a fresh VPS with none of my own setup baked in.
 - Keep pull requests small and focused. If it's a big architectural change, open an issue first so we can talk about it before you write the code.
 
 ## Running tests
