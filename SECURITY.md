@@ -1,49 +1,34 @@
 # Security Policy
 
-## Reporting a vulnerability
+## Found a vulnerability?
 
-Sentinel runs with elevated privileges on your infrastructure (it monitors and,
-increasingly, acts on your servers), so we take security reports seriously.
+Sentinel runs with real privileges on your infrastructure, and it's increasingly able to act on its own, so I take security reports seriously.
 
-Please **do not open a public GitHub issue** for a suspected vulnerability.
+Please don't open a public GitHub issue about it.
 
-Instead, open a private security advisory via GitHub's "Report a vulnerability"
-flow on this repository (Security tab → Report a vulnerability), or contact the
-maintainers directly through the channel listed in the repository profile.
+Instead, use GitHub's private security advisory flow on this repo (the Security tab has a "Report a vulnerability" button), or reach out through the contact info in the repository profile.
 
-Include, where possible:
-- A description of the issue and its impact
-- Steps to reproduce, or a proof of concept
-- The affected version/commit
-- Any suggested remediation
+If you can, include:
+- What the issue is and what it lets someone do
+- Steps to reproduce it, or a proof of concept
+- Which version or commit you tested against
+- Any fix you'd suggest, if you have one
 
-We aim to acknowledge reports within 72 hours.
+I'll try to acknowledge reports within 72 hours.
 
-## Scope
+## What's in scope
 
-Sentinel's architecture is split into two privilege domains:
+Sentinel is split into two halves with different levels of trust:
 
-- **`sentinel-server`** — unprivileged. Runs the web UI, API, AI orchestration,
-  and incident engine. Never has direct host access.
-- **`sentinel-agent`** — privileged (runs as root). Exposes a fixed, schema-
-  validated **tool registry** over a local Unix socket. It has no generic
-  "run a command" endpoint.
+- **`sentinel-server`**, unprivileged. Runs the web UI, the API, the AI stuff, and the incident engine. Has no direct access to the host.
+- **`sentinel-agent`**, privileged, runs as root. Exposes a fixed, schema-checked list of tools over a local socket. There's no generic "run a command" endpoint anywhere.
 
-Reports about privilege escalation from the server into the agent, tool
-registry validation bypasses, authentication/session handling, or the AI's
-ability to invoke a tool outside its declared risk policy are all in scope
-and especially valuable.
+Reports about getting from the server into the agent, bypassing the tool registry's checks, breaking auth or session handling, or getting the AI to call a tool outside its declared risk level, all of that is exactly the kind of thing I want to hear about.
 
 ## Supported versions
 
-Only the latest released version is supported with security fixes while the
-project is pre-1.0.
+Only the latest release gets security fixes right now, the project's still pre-1.0.
 
-## Repository history
+## About the git history
 
-The Git history was rewritten before Sentinel was open sourced. Local
-environment files, a real server hostname, a LAN IP, and internal notes were
-removed from the early commits, and references to the author's own machine
-were replaced with placeholders. Commit hashes from before the public release
-will not match anything seen earlier; the commit dates and messages still
-reflect the real development timeline.
+I rewrote the git history before making Sentinel public. The early commits had a local environment file, my real server's hostname, a LAN IP, and some internal notes in them, none of which should've been public. All of that's been removed, and anything pointing at my own machine got swapped for a placeholder. So commit hashes from before the public release won't match anything you might have seen earlier, but the dates and messages themselves are still the real ones.

@@ -1,58 +1,44 @@
 # Contributing to Sentinel
 
-Thanks for your interest in contributing.
+Thanks for wanting to help out with this.
 
-## Development setup
+## Setting things up
 
-Sentinel is split into three packages:
+The project's split into three main pieces:
 
 ```
-server/     unprivileged control plane — API, web UI backend, AI orchestration
-agent/      privileged host agent — the only process with root/systemctl/Docker access
-frontend/   React UI, built and served by server/
-cli/        the `sentinel` management CLI
+server/     the unprivileged half, API, web backend, AI stuff
+agent/      the privileged one, the only process with root/systemctl/Docker access
+frontend/   the React UI, built and served by server/
+cli/        the `sentinel` command
 ```
 
-See `ARCHITECTURE.md` for the current architecture, implementation status, and
-in-flight decisions before making structural changes.
+Read `ARCHITECTURE.md` first if you're planning a bigger change, it covers how things are laid out and why, so you're not fighting the design.
 
-## Ground rules
+## Rules I actually care about
 
-- **Never add a way for the server or the AI to run an arbitrary shell
-  command.** All privileged operations go through the agent's tool registry —
-  a fixed, schema-validated set of named tools with a declared risk level.
-  If your change needs a new privileged capability, add a new tool with an
-  explicit risk classification rather than widening an existing one.
-- Prefer `execFile`/`spawn` with an argv array over shell-string
-  interpolation anywhere a process is spawned.
-- Don't hardcode host-specific values (domains, IPs, paths). Sentinel must
-  work on a freshly provisioned VPS with no assumptions about the installer's
-  own infrastructure.
-- Keep PRs focused. Large architectural changes should be discussed in an
-  issue first.
+- **Never give the server or the AI a way to run a raw shell command.** Every privileged thing goes through the agent's tool list, a fixed set of named tools, each with a schema and a risk level. If you need a new capability, add a new tool with its own honest risk level instead of loosening one that already exists.
+- Use `execFile`/`spawn` with an argv array, not a shell string, anywhere you spawn a process.
+- Don't hardcode anything specific to one machine, domains, IPs, file paths. This has to work on a fresh VPS with none of my own setup baked in.
+- Keep pull requests small and focused. If it's a big architectural change, open an issue first so we can talk about it before you write the code.
 
-## Tests
+## Running tests
 
-Run the test suite for the package you touched before opening a PR:
+Run the tests for whatever you touched before opening a PR:
 
 ```bash
 cd server && npm test
 cd agent  && npm test
 ```
 
-If you don't have Node installed locally, run tests the way this
-project's own development has: through an ephemeral container, no host
-install required —
+If you don't want to install Node locally, you can run them in a throwaway container instead:
 
 ```bash
 docker run --rm -v "$PWD:/repo" -w /repo/server node:20-alpine node --test src
 docker run --rm -v "$PWD:/repo" -w /repo/agent  node:20-alpine node --test src
 ```
 
-`install.sh` changes should be checked with shellcheck and, ideally,
-actually run — a systemd-capable container (e.g. `jrei/systemd-ubuntu`)
-lets you exercise real `systemctl`/`journalctl` without touching your
-own machine:
+If you touch `install.sh`, run it through shellcheck, and ideally actually run it somewhere. A systemd-capable container lets you test real `systemctl`/`journalctl` behavior without messing with your own machine:
 
 ```bash
 docker run --rm -v "$PWD:/repo:ro" koalaman/shellcheck:stable /repo/install.sh
@@ -65,10 +51,8 @@ docker exec sentinel-test sentinel doctor
 docker rm -f sentinel-test
 ```
 
-`cli/` has no automated tests yet (syntax-checked only) — the installer
-run above is its real integration test.
+`cli/` doesn't have automated tests yet, just a syntax check. The installer run above is basically its real test right now.
 
-## Commit style
+## Commit messages
 
-Use conventional prefixes where it helps: `feat:`, `fix:`, `refactor:`,
-`docs:`, `security:`.
+Doesn't need to be perfect, but prefixes like `feat:`, `fix:`, `refactor:`, `docs:`, and `security:` help when they fit.

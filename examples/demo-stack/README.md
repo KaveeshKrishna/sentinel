@@ -1,30 +1,22 @@
-# Demo stack — incident rehearsal
+# Demo stack, for rehearsing an incident
 
-A self-contained two-container stack (`demo-api` depends on `demo-db`) for
-rehearsing Sentinel's full OBSERVE → DIAGNOSE → PLAN → ACT → VERIFY loop
-without touching any of your other production services. Its distinct
-compose project name and internal-only network keep it isolated.
+A small two-container stack (`demo-api` depends on `demo-db`) you can use to run through Sentinel's whole OBSERVE → DIAGNOSE → PLAN → ACT → VERIFY loop without touching any of your other real services. It runs under its own compose project name and its own network, so it stays isolated.
 
-## 1. Bring the stack up
+## 1. Bring it up
 
 ```bash
 docker compose -p sentinel-demo -f examples/demo-stack/compose.yml up -d --build
 ```
 
-Confirm `demo-api` is healthy: `curl http://127.0.0.1:8890/health` → `{"status":"ok"}`.
+Check `demo-api` is healthy: `curl http://127.0.0.1:8890/health` should give you `{"status":"ok"}`.
 
-## 2. The dependency edge (now automatic)
+## 2. The dependency link (this part is automatic)
 
-Sentinel auto-discovers Docker Compose `depends_on` edges from the
-labels compose stamps on each container, on every detector poll — so
-`demo-api depends_on demo-db` registers itself within ~5 seconds of the
-stack coming up. Nothing to do here.
+Sentinel picks up Docker Compose's `depends_on` info from the labels compose adds to each container, every time it polls. So `demo-api depends_on demo-db` registers itself within about 5 seconds of the stack coming up, you don't have to do anything for this step.
 
-This edge matters: `docker stop demo-db` exits **0**, and a clean exit
-only raises an incident *because* something depends on it.
+It matters because `docker stop demo-db` exits with code 0, a clean exit. The only reason that turns into an incident at all is because something else depends on it.
 
-For a non-compose dependency (or to declare one by hand), the explicit
-route still exists:
+If you're not using compose, or you want to declare a dependency yourself, there's a manual way too:
 
 ```bash
 curl -X POST http://localhost:<sentinel-port>/api/resources/relationships \
@@ -36,27 +28,21 @@ curl -X POST http://localhost:<sentinel-port>/api/resources/relationships \
   }'
 ```
 
-(Container names come from `docker ps` — compose prefixes them with the
-project name, `sentinel-demo-*-1` by default.)
+(Container names come from `docker ps`, compose prefixes them with the project name, so `sentinel-demo-*-1` by default.)
 
-## 3. The happy path
+## 3. Try the happy path
 
 ```bash
 docker stop sentinel-demo-demo-db-1
 ```
 
-Within ~10s (2 consecutive 5s detector polls), `demo-api`'s Docker
-`HEALTHCHECK` starts failing (`demo-db` is unreachable), which fires the
-`container_unhealthy` detector rule. Watch it through the loop:
+Within about 10 seconds (two 5-second detector polls), `demo-api`'s Docker healthcheck starts failing since it can't reach `demo-db` anymore, and that trips the `container_unhealthy` rule. Watch it move through the loop:
 
 ```bash
 curl http://localhost:<sentinel-port>/api/incidents
 ```
 
-You should see, in order: an incident at `DETECTED` → `INVESTIGATING`
-(evidence being gathered — container logs showing the database
-connection timing out, git status showing no recent deploy) → `DIAGNOSED` (root cause + a
-`restart_container` recommendation) → `AWAITING_APPROVAL`. Approve it:
+You should see it go `DETECTED` → `INVESTIGATING` (gathering evidence, logs showing the DB connection timing out, checking if there was a recent deploy) → `DIAGNOSED` (a cause plus a `restart_container` suggestion) → `AWAITING_APPROVAL`. Approve it:
 
 ```bash
 curl -X POST http://localhost:<sentinel-port>/api/incidents/<id>/approve \
@@ -64,28 +50,23 @@ curl -X POST http://localhost:<sentinel-port>/api/incidents/<id>/approve \
   -d '{"actionId": <action-id-from-the-incident-detail>}'
 ```
 
-The incident moves to `REMEDIATING` → `VERIFYING` → `RESOLVED` once
-`demo-db` is confirmed running again.
+It'll move to `REMEDIATING` → `VERIFYING` → `RESOLVED` once `demo-db` is actually back up and confirmed healthy.
 
-## 4. The failure path (rehearse this too)
+## 4. Try the failure path too
 
-Break `demo-db` so a restart "succeeds" but the dependency never actually
-recovers — this is the honesty check: Sentinel must report `FAILED`, not
-lie about resolution.
+This one's worth doing on purpose: break `demo-db` in a way where a restart looks like it "succeeds" but the dependency never actually comes back. This is the honesty check, Sentinel needs to say `FAILED` here, not pretend everything's fine.
 
 ```bash
 docker stop sentinel-demo-demo-db-1
 docker rm sentinel-demo-demo-db-1
-# recreate demo-db with a command that will never come up healthy, e.g.:
+# bring demo-db back with something that will never actually get healthy, e.g.:
 docker run -d --name sentinel-demo-demo-db-1 --network sentinel-demo_demo-net \
   postgres:16-alpine postgres --this-flag-does-not-exist
 ```
 
-Repeat the approve step above. The tool call itself will still "succeed"
-(the container starts), but `demo-api`'s health never recovers, so
-verification never converges and the incident ends at `FAILED`.
+Approve the fix the same way as above. The restart itself will "succeed" (the container does start), but `demo-api` never gets healthy again, so verification never passes and the incident ends at `FAILED` instead of `RESOLVED`.
 
-## Cleanup
+## Cleaning up
 
 ```bash
 docker compose -p sentinel-demo -f examples/demo-stack/compose.yml down -v

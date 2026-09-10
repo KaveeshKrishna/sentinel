@@ -1,53 +1,39 @@
-# Sentinel — public demo build
+# Sentinel, the public demo build
 
-A shareable, **fully fabricated** version of the Sentinel dashboard — the
-same React frontend, built with `VITE_DEMO=1`.
+A shareable version of the Sentinel dashboard that's completely made up, same real React frontend, just built with `VITE_DEMO=1`.
 
-## What it is
+## What's actually happening
 
-That flag pulls in [`frontend/src/demo/`](../frontend/src/demo/), which
-replaces `window.fetch` and `window.WebSocket` before the app mounts:
+That flag pulls in [`frontend/src/demo/`](../frontend/src/demo/), which swaps out `window.fetch` and `window.WebSocket` before the app even mounts:
 
-- every `/api/*` request is answered from fabricated state held in the
-  browser
-- the `/ws` telemetry stream is driven by a local simulator that
-  random-walks CPU / RAM / temp / load / network so the dashboard *looks*
-  live
-- Ask Sentinel, incident approval, deploys and AI-provider errors are all
-  scripted
+- every `/api/*` call gets answered from fake state sitting in the browser
+- the `/ws` stream is driven by a little simulator that randomly walks CPU, RAM, temp, load, and network numbers so the dashboard looks alive
+- Ask Sentinel, approving incidents, deploys, and AI-provider errors are all scripted ahead of time
 
-**There is no backend.** The build output is static HTML/JS/CSS. It cannot
-read or change anything on the host it is served from — it is safe to host
-anywhere.
+**There's no backend at all.** The whole thing is just static HTML/JS/CSS. It can't read or touch anything on whatever machine it happens to be hosted on, so it's safe to put anywhere.
 
-Per-visitor changes (stopping a service, approving the incident, editing
-settings) persist in that browser's `localStorage`; the notice popup has a
-**Reset demo** button.
+Anything you do on it (stopping a service, approving an incident, changing settings) gets saved in that browser's `localStorage` only. There's a Reset demo button in the notice popup if you want to start over.
 
-Login: **user `demo` / password `demo`** (there's a "Fill demo
-credentials" button on the login page).
+Login is **user `demo`, password `demo`** (there's also a "Fill demo credentials" button right on the login page).
 
-## Build
+## Building it
 
 ```bash
-bash sentinel-demo/build.sh      # → sentinel-demo/dist/
+bash sentinel-demo/build.sh      # outputs to sentinel-demo/dist/
 ```
 
-`sentinel-demo/dist/` is gitignored — it's a build artifact. Rebuild with
-the same command after any frontend change.
+`sentinel-demo/dist/` is gitignored since it's just a build output. Run the same command again any time you change the frontend.
 
-## Serve
+## Serving it
 
-It's a static SPA, so any static host works. To check locally:
+It's a static SPA, so basically any static host works. To check it locally:
 
 ```bash
 npx serve sentinel-demo/dist
 # or:  cd sentinel-demo/dist && python3 -m http.server 4173
 ```
 
-For a production reverse proxy you only need static file serving with an
-SPA fallback. Example Caddy block (see
-[`Caddyfile.snippet`](./Caddyfile.snippet)):
+For a real reverse proxy you just need static file serving with an SPA fallback. Here's a Caddy block (also in [`Caddyfile.snippet`](./Caddyfile.snippet)):
 
 ```
 http://DEMO_DOMAIN {
@@ -58,7 +44,7 @@ http://DEMO_DOMAIN {
 }
 ```
 
-nginx equivalent:
+Same thing in nginx:
 
 ```nginx
 server {
